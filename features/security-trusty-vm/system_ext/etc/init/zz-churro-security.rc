@@ -1,0 +1,5 @@
+# Project Churro init hooks (system_ext side, so service overrides stay on the same side of
+# the treble boundary; "zz-" so it is parsed after the stock system_ext files).
+# Security VM mode: "nonprotected" (default; any CPU with VT-x/AMD-V) or "protected"
+# (stock Googlebook behaviour, needs x86 pKVM). Pick with androidboot.churro.security_vm=...
+import /system_ext/etc/init/churro/security-vm-${ro.boot.churro.security_vm:-nonprotected}.rc

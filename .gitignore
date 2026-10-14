@@ -1,0 +1,9 @@
+*.bin
+*.img
+*.zip
+packs/
+out/
+work/
+*.log
+tools/bin/
+.idea/

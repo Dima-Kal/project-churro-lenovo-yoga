@@ -1,0 +1,59 @@
+# Project Churro
+
+Make **Googlebook OS** (Android 17 "android-desktop" / Aluminium) recovery images bootable and
+installable on generic x86_64 UEFI PCs, by *converting* Google's official image locally instead
+of redistributing a ported one (same idea as Project Croissant / chromefy for ChromeOS).
+
+> Status: **experimental / bring-up** — boots to Android's system_server + SurfaceFlinger in QEMU;
+> first real-hardware target: Asus T300FA. See [`docs/`](docs/).
+
+## Quick start
+
+Linux or WSL2, as root, ~100 GB free (kernel + Mesa builds), Ubuntu 24.04 packages are installed
+on demand:
+
+```bash
+sudo ./churro.sh auto android-desktop_signed_recovery_image.bin churro.img   # prepare + build
+sudo tools/qemu-test.sh churro.img                                          # optional: QEMU test
+```
+
+Options: `--gfx mesa|native|soft` (default graphics stack, switchable in the GRUB menu) and
+`--packs virt,gpu,storage[,wifi]` (`wifi` = Atheros ath9k; drop it on machines with Intel Wi-Fi).
+
+Write `churro.img` (or a `.img.gz` of it) to a USB drive (Rufus "DD image", Etcher, `dd`), disable
+Secure Boot, boot. If it stops, the GRUB entry "debug console" shows the kernel/Android log on screen.
+Install to a disk from any Linux live session: `sudo ./churro.sh install churro.img /dev/nvme0n1`.
+
+## What the conversion does
+
+1. **Bootloader**: Googlebooks boot via coreboot/depthcharge and the image's EFI partition is empty.
+   Churro builds the initrd a boot-v4 bootloader would (vendor + dlkm + generic ramdisks + extra
+   modules + Android *bootconfig*) and installs GRUB + kernel there. `androidboot.boot_part_uuid`
+   lets Android find its partitions on whatever disk it booted from.
+2. **Kernel**: the image's GKI kernel works for Intel Gen12+ machines. For everything else Churro
+   rebuilds **the very same kernel** from Google's public source (same commit, config, toolchain,
+   release string and kABI CRCs — the image's own modules still load) without KMI trimming and with
+   extra drivers: i915 (older Intel), simpledrm (any UEFI framebuffer), AHCI, virtio, vgem.
+3. **Security** (`features/security-software`): the Googlebook keystore runs in a Trusty VM that
+   needs x86 pKVM + pvmfw DICE + the Google Security Chip. Churro swaps in AOSP's software KeyMint
+   (taken from Google's public Android 17 emulator image) and removes the Trusty/GSC HALs — the
+   counterpart of Croissant's TPM emulator.
+4. **Graphics** (`features/gfx-mesa`): Mesa built from source with the NDK (iris, crocus, virgl,
+   softpipe; hasvk/radv optional); the stack is picked at boot (`androidboot.churro.gfx=`).
+5. **Partitions** are patched by unpacking/repacking EROFS with SELinux labels preserved; dm-verity
+   is switched off (`vbmeta` flags, device reported as unlocked/orange).
+
+Nothing Google-owned is shipped: inputs are the user's recovery image plus files the script
+downloads from Google's public servers (GKI source/toolchains, emulator image) or builds from source.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `churro.sh` | `auto` / `build` / `install` |
+| `lib/` | boot image + vendor_boot parser, bootconfig, ramdisk, ESP/GRUB, EROFS/super/vbmeta patching (`lpinfo.py`) |
+| `features/` | partition overlays + patch scripts (`security-software`, `gfx-mesa`, `security-trusty-vm`) |
+| `kmod/` | Churro kernel build (`build-kernel.sh`, `profiles/`), out-of-tree pack builds |
+| `gfx/` | Mesa for Android build |
+| `tools/` | `prepare.sh` (fetch + build everything), module packs, QEMU helpers, dev helpers |
+| `docs/` | analysis, bring-up log, architecture, device notes; `docs/notes/` = scratch |

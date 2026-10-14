@@ -1,0 +1,8 @@
+# Mesa GL for SurfaceFlinger/HWUI; Vulkan only if a Mesa Vulkan driver is requested
+on early-init
+    setprop ro.hardware.egl mesa
+    setprop ro.hardware.vulkan ${ro.boot.churro.vulkan:-none}
+    setprop ro.hwui.use_vulkan false
+    setprop debug.renderengine.vulkan false
+    setprop debug.renderengine.backend skiaglthreaded
+    setprop debug.hwui.renderer skiagl

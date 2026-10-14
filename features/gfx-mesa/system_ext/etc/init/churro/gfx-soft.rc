@@ -1,0 +1,11 @@
+# Mesa software rendering (kms_swrast/softpipe) on a vgem render node, scanout on whatever KMS
+# device exists (simpledrm on the UEFI framebuffer works). Any GPU, slow.
+# Mesa reads LIBGL_ALWAYS_SOFTWARE from debug.mesa.libgl.always.software on Android.
+on early-init
+    setprop ro.hardware.egl mesa
+    setprop ro.hardware.vulkan none
+    setprop ro.hwui.use_vulkan false
+    setprop debug.renderengine.vulkan false
+    setprop debug.renderengine.backend skiaglthreaded
+    setprop debug.hwui.renderer skiagl
+    setprop debug.mesa.libgl.always.software true

@@ -1,0 +1,2 @@
+# StrongBox KeyMint (vendor APEX) talks to the GSC: don't activate it
+androidboot.vendor.apex.com.android.hardware.keymint.strongbox.desktop=none

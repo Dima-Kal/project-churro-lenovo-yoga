@@ -1,0 +1,2 @@
+# Scripts run in Linux/WSL: keep LF everywhere (CRLF breaks bash: $'\r': command not found)
+* text=auto eol=lf

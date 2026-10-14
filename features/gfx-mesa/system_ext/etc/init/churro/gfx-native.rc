@@ -1,0 +1,6 @@
+# stock Googlebook values (were in vendor build.prop)
+on early-init
+    setprop ro.hardware.egl angle
+    setprop ro.hardware.vulkan intel
+    setprop ro.hwui.use_vulkan true
+    setprop debug.renderengine.vulkan true

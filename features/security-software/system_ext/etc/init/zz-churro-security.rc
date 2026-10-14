@@ -1,0 +1,20 @@
+# Project Churro - "software security" mode (default).
+# Googlebooks run KeyMint/Gatekeeper/secure storage inside a Trusty VM that needs x86 pKVM,
+# pvmfw's DICE chain and the Google Security Chip (GSC, a Ti50 behind /dev/tpm0). Generic PCs
+# have none of that, so we switch the whole stack off and let Android's built-in software
+# fallbacks take over (keystore2 software KeyMint, gatekeeperd SoftGateKeeper) - the Churro
+# equivalent of Croissant's TPM emulator. The matching VINTF declarations are removed at
+# build time (features/security-software/patch-*.sh), otherwise clients wait forever.
+
+on early-init
+    # every stock Trusty trigger (VM launcher, KeyMint HAL, storageproxyd, weaver,
+    # pinweaver_storaged) is gated on this property
+    setprop trusty.security_vm.enabled 0
+
+# GSC tunnel daemon: aborts without a GSC, keep it from crash-looping.
+service android.system.desktop.security.gscd /system/bin/gscd
+    override
+    class early_hal
+    user hsm
+    group hsm
+    disabled
