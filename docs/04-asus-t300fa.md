@@ -46,7 +46,13 @@ sudo ./churro.sh install churro.img /dev/mmcblk0
 This writes the image, moves the backup GPT to the end, grows userdata over the free space and
 switches the ESP to `boot_source=internal`.
 
+> **Update:** the T300FA's Core M (Broadwell) lacks GFNI/AVX-VNNI, which Googlebook userspace
+> uses from the very first program (`init`), so it cannot boot this image (see 02, "Older CPUs").
+
 ## What to report back
+
+- Boot the GRUB entry "debug", then plug the stick into Windows and send `boot.log` from the
+  **CHURRO-LOG** drive (works even after a hang + holding the power button).
 
 - Does GRUB show? Does the kernel get to Android's boot animation?
 - Output of the "debug console" entry if it stops (photo of the screen is fine).

@@ -19,8 +19,9 @@ G="https://android.googlesource.com"
 L=$(losetup -f --show -r -P "$IMG"); trap 'losetup -d "$L"' EXIT; sleep 1
 n=$(sgdisk -p "$L" | awk '$NF == "boot_a" {print $1}')
 W=$C/image; mkdir -p "$W"; bootimg_extract "${L}p$n" "$W"
-curl -fsSL https://raw.githubusercontent.com/torvalds/linux/v6.18/scripts/extract-ikconfig -o "$C/extract-ikconfig"
-curl -fsSL https://raw.githubusercontent.com/torvalds/linux/v6.18/scripts/extract-vmlinux -o "$C/extract-vmlinux"
+for t in extract-ikconfig extract-vmlinux; do
+  [ -s "$C/$t" ] || curl -fsSL --retry 3 "https://raw.githubusercontent.com/torvalds/linux/v6.18/scripts/$t" -o "$C/$t"
+done
 bash "$C/extract-ikconfig" "$W/kernel" > "$W/ikconfig"
 bash "$C/extract-vmlinux" "$W/kernel" > "$W/vmlinux" 2>/dev/null
 REL=$(strings "$W/vmlinux" | grep -oE 'Linux version [^ ]+' | head -1 | cut -d' ' -f3)

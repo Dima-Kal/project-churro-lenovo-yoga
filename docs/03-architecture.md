@@ -63,6 +63,25 @@ files get a sibling's label or an explicit one.
 * `security-trusty-vm` (experimental) — keep Trusty, run the security VM non-protected or
   protected (`androidboot.churro.security_vm=`). Only useful on hardware where x86 pKVM works;
   the KeyMint TA still needs a DICE chain + GSC.
+* `firmware-lockdown` (default) — Googlebooks flash their own coreboot/EC/VPD from Android. The
+  build removes `flashrom`, `futility`, `vpd`, `crossystem`, `fwtool`, `elogtool` and their
+  executor HALs; independently, `churro.sh` always strips `spi-intel.writeable=1` /
+  `ignore_protection_status=1` from the kernel cmdline and blacklists `spi_intel`/`spi_intel_pci`,
+  so the BIOS flash chip has no driver at all.
+* NPU: `intel_vpu` is blacklisted unless `CHURRO_NPU=true` (top of `churro.sh`): the image only
+  has Panther Lake NPU firmware and on Arrow Lake the failed probe froze the machine.
+* `debug-log` (default) — boot log to a file you can read from Windows. The "debug" GRUB entries
+  start `/churro/logger` (static, `features/debug-log/logger.c`) as `rdinit`: it forks a child
+  (own mount namespace, invisible to first-stage init) that copies `/dev/kmsg` — kernel + Android
+  init messages — into `boot.log` on the **CHURRO-LOG** partition (the unused KERN-A slot turned
+  into a FAT32 basic-data partition; the ESP is hidden by Windows), fsync'ed per batch so a hang
+  + power button keeps it; then execs the real `/init`. `boot.log`/`boot.prev.log` are created
+  by the build at 64 MiB, filled with blank lines, and only overwritten in place (text ends at the
+  first empty line; rotation copies in place too), so FAT and directory entries never change at
+  boot — appending had left the FAT inconsistent after a power cut on a real stick. Full file →
+  the logger writes a "full" note and stops (a normal boot is ~1–3 MiB). The child stays in the `kernel` SELinux
+  domain, so the feature adds the needed rules to the vendor policy and drops the precompiled
+  policy (init compiles it at boot). Feature hooks used: `build-ramdisk.sh`, `cmdline-debug`.
 * graphics (WIP) — Mesa built with the NDK (`gfx/build-mesa.sh`: iris/crocus/virgl/softpipe +
   hasvk/radv) for GPUs the image's Intel-only ANGLE/ANV stack can't drive.
 

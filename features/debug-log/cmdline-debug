@@ -1,0 +1,2 @@
+# Added to the "debug" GRUB entries only: start the boot logger (logger.c) before Android's init.
+rdinit=/churro/logger

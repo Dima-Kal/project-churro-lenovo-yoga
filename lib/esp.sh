@@ -40,18 +40,21 @@ probe --set=puuid --part-uuid (\$root)
 set vcmd="$vcmd"
 
 set base="\$vcmd androidboot.boot_part_uuid=\$puuid androidboot.boot_source=\$boot_source"
-set dbg="console=tty0 console=ttyS1,115200 earlycon=efifb ignore_loglevel printk.devkmsg=on"
+# debug: log on screen (fbcon) + serial, stop on errors instead of rebooting (panic=0; Android
+# init's fatal errors become panics; the image's lockup watchdogs only warn), plus feature debug
+# args (debug-log: boot.log on the CHURRO-LOG partition).
+set dbg="console=tty0 console=ttyS1,115200 ignore_loglevel printk.devkmsg=on panic=0 androidboot.init_fatal_panic=true softlockup_panic=0 nmi_watchdog=nopanic ${CHURRO_DEBUG_ARGS:-}"
 
 menuentry "Googlebook OS (Churro)" {
   linux (\$root)/churro/kernel \$base \$extra_args
   initrd (\$root)/churro/initrd.img
 }
-menuentry "Googlebook OS (Churro) - debug console" {
+menuentry "Googlebook OS (Churro) - debug (log on screen + CHURRO-LOG/boot.log)" {
   linux (\$root)/churro/kernel \$base \$dbg \$extra_args
   initrd (\$root)/churro/initrd.img
 }
-menuentry "Googlebook OS (Churro) - debug, no pKVM" {
-  linux (\$root)/churro/kernel \$base kvm-intel.pkvm=0 \$dbg \$extra_args
+menuentry "Googlebook OS (Churro) - early debug (slow firmware console, for black screens)" {
+  linux (\$root)/churro/kernel \$base \$dbg earlycon=efifb \$extra_args
   initrd (\$root)/churro/initrd.img
 }
 submenu "Graphics: other stacks" {
@@ -65,6 +68,14 @@ submenu "Graphics: other stacks" {
   }
   menuentry "Googlebook native (Intel Gen12+: ANGLE on ANV)" {
     linux (\$root)/churro/kernel \$base androidboot.churro.gfx=native \$extra_args
+    initrd (\$root)/churro/initrd.img
+  }
+  menuentry "Mesa - debug" {
+    linux (\$root)/churro/kernel \$base androidboot.churro.gfx=mesa \$dbg \$extra_args
+    initrd (\$root)/churro/initrd.img
+  }
+  menuentry "Googlebook native - debug" {
+    linux (\$root)/churro/kernel \$base androidboot.churro.gfx=native \$dbg \$extra_args
     initrd (\$root)/churro/initrd.img
   }
 }

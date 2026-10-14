@@ -6,6 +6,11 @@
 #        sudo ./churro.sh install <churro.img> <disk>
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
+
+# NPU (Intel "VPU" AI accelerator) driver. The image only ships Panther Lake NPU firmware; on
+# other Intel chips (e.g. Arrow Lake) intel_vpu fails to load it and the machine freezes during
+# boot. true = let it load (only for Panther Lake-class machines).
+CHURRO_NPU=${CHURRO_NPU:-false}
 . "$HERE/lib/bootimg.sh"; . "$HERE/lib/bootconfig.sh"; . "$HERE/lib/esp.sh"; . "$HERE/lib/ramdisk.sh"; . "$HERE/lib/repack.sh"
 
 die() { echo "churro: $*" >&2; exit 1; }
@@ -20,7 +25,7 @@ part() { local n; n=$(sgdisk -p "$LOOP" | awk -v l="$1" '$NF == l {print $1; exi
 
 cmd_build() {
   local in=$1 out=$2; shift 2
-  local packs=() bsrc=external feats=security-software repack=1 kdir=""
+  local packs=() bsrc=external feats=security-software,firmware-lockdown repack=1 kdir=""
   while [ $# -gt 0 ]; do case $1 in
     --modules) packs+=("$2"); shift 2 ;;
     --features) feats=$2; shift 2 ;;
@@ -57,6 +62,8 @@ cmd_build() {
 
   log "building Churro ramdisk"
   ramdisk_build "$W" "${packs[@]}"
+  for f in "${fdirs[@]}"; do [ -f "$f/build-ramdisk.sh" ] && bash "$f/build-ramdisk.sh" "$W/cr"; done
+  ramdisk_pack "$W"
 
   log "writing bootconfig + initrd"
   local vbc; vbc=$(cat "$W/vboot/bootconfig")
@@ -89,9 +96,49 @@ EOF
   local fargs=""
   for f in "${fdirs[@]}"; do [ -f "$f/cmdline" ] && fargs="$fargs $(grep -vE '^\s*(#|$)' "$f/cmdline" | tr '\n' ' ')"; done
   export CHURRO_EXTRA_ARGS="$(echo $fargs ${CHURRO_EXTRA_ARGS:-})"
+  fargs=""   # ...and args for the "debug" boot entries only
+  for f in "${fdirs[@]}"; do [ -f "$f/cmdline-debug" ] && fargs="$fargs $(grep -vE '^\s*(#|$)' "$f/cmdline-debug" | tr '\n' ' ')"; done
+  export CHURRO_DEBUG_ARGS="$(echo $fargs)"
+
+  # Slot state: the boot HAL keeps ChromeOS-style slot flags in the vbmeta_a/_b GPT attributes
+  # (bits 48-51 priority, 52-55 tries, 56 successful). Recovery images ship slot B marked and A
+  # not, but we boot A: unmarked, vold runs *every* boot as an unfinished update (checkpoint,
+  # dm-bow on /data), which fills a small /data and panics. Mark A active + successful, clear B.
+  local va vb b; va=$(part vbmeta_a); va=${va##*p}; vb=$(part vbmeta_b); vb=${vb##*p}
+  for b in 48 49 50 51 52 53 54 55 56; do sgdisk -A "$vb:clear:$b" "$LOOP" >/dev/null; done
+  for b in 48 49 50 51 56; do sgdisk -A "$va:set:$b" "$LOOP" >/dev/null; done
+
+  # Log partition: the image's KERN-A (512 MiB, unused legacy ChromeOS kernel slot, all zeros)
+  # becomes a FAT32 "basic data" partition, so Windows shows it as a drive (the ESP is hidden).
+  local ln; ln=$(sgdisk -p "$LOOP" | awk '$NF == "KERN-A" || $NF == "CHURRO-LOG" {print $1; exit}')
+  if [ -n "$ln" ]; then
+    log "log partition: p$ln -> CHURRO-LOG (FAT32)"
+    sgdisk -t "$ln:0700" -c "$ln:CHURRO-LOG" "$LOOP" >/dev/null
+    mkfs.vfat -F 32 -n CHURRO-LOG "${LOOP}p$ln" >/dev/null
+    # Fixed-size log files, pre-filled with blank lines: the boot logger only overwrites them in
+    # place, so the FAT/directory never change at boot and a power cut can't corrupt them.
+    local lm; lm=$(mktemp -d); mount "${LOOP}p$ln" "$lm"
+    head -c $((64 << 20)) /dev/zero | tr '\0' '\n' > "$lm/boot.log"
+    cp "$lm/boot.log" "$lm/boot.prev.log"
+    umount "$lm"; rmdir "$lm"
+  fi
+
+  # Vendor cmdline, made safe for a non-Googlebook PC:
+  # - BIOS flash read-only: drop spi-intel.writeable=1 / ignore_protection_status=1 and blacklist
+  #   the SPI flash drivers outright (Googlebooks flash their own firmware from Android);
+  # - NPU driver blocked unless CHURRO_NPU=true (see top).
+  # module_blacklist is a single kernel parameter (the last one wins), so extend the vendor's.
+  local vcmd blk=spi_intel,spi_intel_pci
+  [ "$CHURRO_NPU" = true ] || blk="$blk,intel_vpu"
+  vcmd=$(sed -E 's/ ?spi-intel\.(writeable|ignore_protection_status)=[^ ]*//g' "$W/vboot/cmdline")
+  case $vcmd in
+    *module_blacklist=*) vcmd=$(printf '%s' "$vcmd" | sed -E "s/module_blacklist=([^ ]*)/module_blacklist=\1,$blk/") ;;
+    *) vcmd="$vcmd module_blacklist=$blk" ;;
+  esac
+  log "kernel cmdline: flash read-only, blacklisted: $blk"
 
   log "populating EFI-SYSTEM"
-  esp_build "$(part EFI-SYSTEM)" "$W" "$(cat "$W/vboot/cmdline")" "$bsrc"
+  esp_build "$(part EFI-SYSTEM)" "$W" "$vcmd" "$bsrc"
   rm -rf "$W"
   log "done: $out"
 }
@@ -140,7 +187,7 @@ cmd_auto() {
   local margs=() p; for p in ${packs//,/ }; do
     [ -d "$CHURRO_PACK_DIR/$p" ] || die "no module pack '$p' in $CHURRO_PACK_DIR"; margs+=(--modules "$CHURRO_PACK_DIR/$p"); done
   CHURRO_EXTRA_ARGS="androidboot.churro.gfx=$gfx ${CHURRO_EXTRA_ARGS:-}" \
-    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --features security-software,gfx-mesa "${margs[@]}"
+    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --features security-software,firmware-lockdown,gfx-mesa,debug-log "${margs[@]}"
 }
 
 case ${1:-} in

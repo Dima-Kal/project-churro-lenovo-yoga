@@ -24,8 +24,13 @@ ramdisk_build() {
       # pack deps use bare names: "a.ko: b.ko c.ko" -> first-stage init wants /lib/modules paths
       sed -E 's#([^ :]+\.ko)#/lib/modules/\1#g' "$p/modules.dep" >> "$M/modules.dep"
     fi
-    [ -d "$p/firmware" ] && { mkdir -p "$R/lib/firmware"; cp -a "$p/firmware/." "$R/lib/firmware/"; }
+    if [ -d "$p/firmware" ]; then mkdir -p "$R/lib/firmware"; cp -a "$p/firmware/." "$R/lib/firmware/"; fi
   done
+}
+
+# ramdisk_pack <workdir>: $W/cr -> $W/churro.cpio (features may add files to $W/cr before this)
+ramdisk_pack() {
+  local W=$1 R=$1/cr
   # lz4 *legacy* like the vendor/generic ramdisks: the kernel's unlz4 cannot tell where a legacy
   # stream ends, so an uncompressed cpio after it fails with "Decoding failed" and is ignored.
   (cd "$R" && find . | cpio -o -H newc -R 0:0 --quiet) | lz4 -l -12 -q > "$W/churro.cpio"

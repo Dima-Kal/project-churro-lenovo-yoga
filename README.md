@@ -19,9 +19,13 @@ sudo tools/qemu-test.sh churro.img                                          # op
 
 Options: `--gfx mesa|native|soft` (default graphics stack, switchable in the GRUB menu) and
 `--packs virt,gpu,storage[,wifi]` (`wifi` = Atheros ath9k; drop it on machines with Intel Wi-Fi).
+`CHURRO_NPU=true` lets the NPU driver load (off by default: it froze an Arrow Lake laptop). The BIOS
+flash chip is always made inaccessible (the Googlebook image would otherwise be able to reflash it).
 
 Write `churro.img` (or a `.img.gz` of it) to a USB drive (Rufus "DD image", Etcher, `dd`), disable
-Secure Boot, boot. If it stops, the GRUB entry "debug console" shows the kernel/Android log on screen.
+Secure Boot, boot. If it stops or hangs, boot the GRUB entry "debug": the log scrolls on screen,
+the machine halts on errors instead of rebooting, and everything is saved to `boot.log` on the
+stick's **CHURRO-LOG** drive (visible in Windows; the previous boot's log is `boot.prev.log`).
 Install to a disk from any Linux live session: `sudo ./churro.sh install churro.img /dev/nvme0n1`.
 
 ## What the conversion does
