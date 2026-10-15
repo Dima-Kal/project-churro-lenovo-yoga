@@ -40,6 +40,16 @@ disk we booted from) and `androidboot.boot_source=external|internal`.
   unresolved symbols). It also trusts Google's GKI module signing cert (extracted from the image's
   vmlinux) so system_dlkm modules keep their "signed" status. `prepare.sh` refuses the kernel if
   any of the 4501 GKI export CRCs differs from Google's `vmlinux.symvers`.
+  Small built-in source fixes live in `kmod/patches/*.patch` (applied copies recorded in
+  `<src>/.churro-applied`, edited/removed patches reversed automatically; the kernel cache dir is
+  keyed on profile + patches + build script):
+  - `drm-remove-firmware-fb` — DRM core removes the firmware framebuffer (simpledrm) when any PCI
+    display driver registers. Google's prebuilt xe never does it (no EFI framebuffer on
+    Googlebooks), so simpledrm stayed and hwcomposer used it as the primary display (black screen).
+    Side effect: xe has no fbdev, so the on-screen debug log stops when xe loads (~5 s); the
+    CHURRO-LOG files are unaffected.
+  - `sysfb-disable-any-gpu` — also drop it when the framebuffer belongs to *another* GPU
+    (hybrid laptops with the boot framebuffer on an undriven dGPU).
 
 ### 3. Module packs (`--modules dir`)
 Directory of `.ko` + `modules.load` (+ `modules.dep`). Added to the first-stage ramdisk, loaded

@@ -58,7 +58,9 @@ mkdir -p "$S/bin"
 [ -x "$S/bin/pahole" ] || PAHOLE_VER=$PAHOLE bash "$HERE/tools/build-pahole.sh" "$S/bin"
 
 # --- 3. Churro kernel + module packs ---
-K=$C/kernel-$PROF-$BID
+# cache key includes profile + patches + build script: changing any of them rebuilds the kernel
+KH=$(cat "$HERE/kmod/profiles/$PROF.conf" "$HERE/kmod/build-kernel.sh" "$HERE"/kmod/patches/*.patch 2>/dev/null | md5sum | cut -c1-8)
+K=$C/kernel-$PROF-$BID-$KH
 bash "$HERE/tools/extract-certs.sh" "$W/vmlinux" > "$W/gki-certs.pem"
 grep -q BEGIN "$W/gki-certs.pem" || { echo "no signing certificate found in the image kernel" >&2; exit 1; }
 [ -f "$K/kernel" ] || CHURRO_GKI_CERTS=$W/gki-certs.pem bash "$HERE/kmod/build-kernel.sh" "$S/common" "$S/clang" "$S/rust" "$S/bin" "$W/ikconfig" "$REL" "$PROF" "$K"

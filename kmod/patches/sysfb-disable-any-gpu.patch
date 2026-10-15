@@ -1,0 +1,17 @@
+--- a/drivers/firmware/sysfb.c	2026-10-15 19:09:50.647720909 +0200
++++ b/drivers/firmware/sysfb.c	2026-10-15 19:09:50.656387573 +0200
+@@ -71,7 +71,13 @@
+ 
+ 	mutex_lock(&disable_lock);
+ 	parent = sysfb_parent_dev(si);
+-	if (!dev || !parent || dev == parent) {
++	/*
++	 * Churro: drop the firmware framebuffer whenever a GPU driver takes over, even if the
++	 * framebuffer belongs to another GPU (hybrid laptops: it can sit on a dGPU nothing drives,
++	 * and Android's hwcomposer would pick the dead simpledrm display as primary). PCs without
++	 * a supported GPU driver never get here and keep simpledrm.
++	 */
++	if (true || !dev || !parent || dev == parent) {
+ 		sysfb_unregister();
+ 		disabled = true;
+ 	}

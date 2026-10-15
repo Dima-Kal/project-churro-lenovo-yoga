@@ -1,0 +1,43 @@
+--- a/drivers/gpu/drm/drm_drv.c
++++ b/drivers/gpu/drm/drm_drv.c
+@@ -698,6 +698,9 @@
+ 	mutex_destroy(&dev->filelist_mutex);
+ }
+ 
++/* Churro: drivers/video/aperture.c (no <linux/pci.h> here: it would change export CRCs) */
++void churro_remove_firmware_fb(struct device *dev, const char *name);
++
+ static int drm_dev_init(struct drm_device *dev,
+ 			const struct drm_driver *driver,
+ 			struct device *parent)
+@@ -730,6 +733,16 @@
+ 		return -EINVAL;
+ 	}
+ 
++	/*
++	 * Churro: remove the firmware framebuffer (simpledrm/efifb) for every PCI display driver.
++	 * Googlebook's prebuilt xe module never does (its firmware has no EFI framebuffer), so
++	 * simpledrm stayed forever and hwcomposer used it as the primary display (black screen).
++	 * Same call upstream drivers make before touching the hardware; a no-op when the driver
++	 * already did it.
++	 */
++	if (drm_core_check_feature(dev, DRIVER_MODESET))
++		churro_remove_firmware_fb(parent, driver->name);
++
+ 	INIT_LIST_HEAD(&dev->filelist);
+ 	INIT_LIST_HEAD(&dev->filelist_internal);
+ 	INIT_LIST_HEAD(&dev->clientlist);
+--- a/drivers/video/aperture.c
++++ b/drivers/video/aperture.c
+@@ -372,3 +372,11 @@
+ 
+ }
+ EXPORT_SYMBOL(aperture_remove_conflicting_pci_devices);
++
++/* Churro: called by drm_dev_init() for every KMS driver, see drivers/gpu/drm/drm_drv.c */
++void churro_remove_firmware_fb(struct device *dev, const char *name);
++void churro_remove_firmware_fb(struct device *dev, const char *name)
++{
++	if (dev_is_pci(dev))
++		aperture_remove_conflicting_pci_devices(to_pci_dev(dev), name);
++}

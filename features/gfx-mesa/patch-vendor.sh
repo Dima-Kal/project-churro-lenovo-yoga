@@ -33,6 +33,9 @@ done
 
 # 3. graphics props move from build.prop to boot-time selection (see zz-churro-gfx.rc)
 sed -i -E '/^(ro\.hardware\.egl|ro\.hardware\.vulkan|ro\.hwui\.use_vulkan|debug\.renderengine\.vulkan|debug\.renderengine\.backend)=/d' "$V/build.prop"
+# drm_hwcomposer is set to require the KMS COLOR_PIPELINE plane property, which only Panther
+# Lake-class display hardware has; elsewhere it rejects every plane. Generic PCs: off.
+sed -i 's/^vendor\.hwc\.drm\.enable_color_pipeline=true$/vendor.hwc.drm.enable_color_pipeline=false/' "$V/build.prop"
 echo "   vendor: Mesa installed (+libs:$added)"
 
 # 4. every DRM node is a GPU/display device. The image only labels card0/card1/renderD128/129;

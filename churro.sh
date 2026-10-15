@@ -178,10 +178,11 @@ cmd_install() {
 # prepare everything (tools/prepare.sh) and build with the recommended defaults.
 cmd_auto() {
   local in=$1 out=$2; shift 2
-  local gfx=native kprof=generic packs=virt,gpu,storage
+  local gfx=native kprof=generic packs=virt,gpu,storage xfeat=""
   while [ $# -gt 0 ]; do case $1 in
     --gfx) gfx=$2; shift 2 ;; --kernel-profile) kprof=$2; shift 2 ;;
     --packs) packs=$2; shift 2 ;;   # module packs from prepare.sh: virt,gpu,storage[,wifi,i915]
+    --extra-features) xfeat=,$2; shift 2 ;;   # e.g. test-minigbm-arl (test builds)
     *) die "unknown option $1" ;; esac; done
   bash "$HERE/tools/prepare.sh" "$in" "$kprof"
   local envf; envf=$(ls -t "${CHURRO_CACHE:-/var/cache/churro}"/prepared-*.env | head -1)
@@ -190,7 +191,7 @@ cmd_auto() {
   local margs=() p; for p in ${packs//,/ }; do
     [ -d "$CHURRO_PACK_DIR/$p" ] || die "no module pack '$p' in $CHURRO_PACK_DIR"; margs+=(--modules "$CHURRO_PACK_DIR/$p"); done
   CHURRO_EXTRA_ARGS="androidboot.churro.gfx=$gfx ${CHURRO_EXTRA_ARGS:-}" \
-    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --features security-software,firmware-lockdown,firmware-extra,gfx-mesa,debug-log "${margs[@]}"
+    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,debug-log$xfeat" "${margs[@]}"
 }
 
 case ${1:-} in

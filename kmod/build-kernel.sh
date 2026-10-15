@@ -14,6 +14,18 @@ export PATH="$CLANG/bin:$RUST/bin:$BINDGEN:$PATH"
 # bindgen must use the Android clang's libclang, not a distro one (unknown -W options otherwise)
 export LIBCLANG_PATH="$CLANG/lib"
 O=$SRC/out-kernel-$PROF; mkdir -p "$O"
+# kmod/patches/*.patch: small built-in fixes (no exported types touched -> CRCs unchanged).
+# Applied copies are recorded in $SRC/.churro-applied: a patch that was edited or deleted since
+# is reversed first, so the cached source tree always matches kmod/patches.
+A=$SRC/.churro-applied; mkdir -p "$A"
+for a in "$A"/*.patch; do
+  [ -e "$a" ] || continue
+  cmp -s "$a" "$HERE/patches/${a##*/}" || { patch -d "$SRC" -p1 -R -s < "$a"; rm "$a"; }
+done
+for p in "$HERE"/patches/*.patch; do
+  [ -e "$p" ] && [ ! -e "$A/${p##*/}" ] || continue
+  patch -d "$SRC" -p1 -s -N < "$p"; cp "$p" "$A/"
+done
 # KBUILD_GENDWARFKSYMS_STABLE: GKI computes symbol CRCs in "--stable" (kABI-aware) mode; without
 # it every CRC touching a struct differs and vendor modules fail with "disagrees about version".
 MK=(make -C "$SRC" -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=x86_64 O="$O" KBUILD_GENDWARFKSYMS_STABLE=1)
