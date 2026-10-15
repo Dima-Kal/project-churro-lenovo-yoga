@@ -70,7 +70,12 @@ log "kABI check: $bad of $(wc -l < "$C/vmlinux.symvers-$BID") GKI exports differ
 [ "$bad" = 0 ] || { echo "kABI broken: the image's prebuilt modules won't load. Fix the profile ($PROF)." >&2; rm -rf "$K"; exit 1; }
 MD=$(ls -d "$K"/modroot/lib/modules/*/)
 P=$C/packs-$PROF-$BID; rm -rf "$P"
-bash "$HERE/tools/make-pack.sh" "$MD" "$P/gpu" i915 virtio-gpu vgem
+# gpu: no i915 by default. Every CPU that can run Googlebook userspace (Alder Lake+) has an iGPU
+# the image's own xe driver supports, and our i915 (loaded first) wedged it without firmware and
+# replaced drm_display_helper with a build xe can't link against. i915 = opt-in pack, kept for
+# pre-Gen12 Intel in case old CPUs ever become usable (instruction emulation).
+bash "$HERE/tools/make-pack.sh" "$MD" "$P/gpu" virtio-gpu vgem
+bash "$HERE/tools/make-pack.sh" "$MD" "$P/i915" i915
 bash "$HERE/tools/make-pack.sh" "$MD" "$P/storage" ahci sdhci-acpi sdhci-pci
 bash "$HERE/tools/make-pack.sh" "$MD" "$P/virt" virtio_pci virtio_input
 # opt-in (auto --packs ...,wifi): replaces the image's out-of-tree cfg80211/mac80211, so the

@@ -17,15 +17,23 @@ sudo ./churro.sh auto android-desktop_signed_recovery_image.bin churro.img   # p
 sudo tools/qemu-test.sh churro.img                                          # optional: QEMU test
 ```
 
-Options: `--gfx mesa|native|soft` (default graphics stack, switchable in the GRUB menu) and
-`--packs virt,gpu,storage[,wifi]` (`wifi` = Atheros ath9k; drop it on machines with Intel Wi-Fi).
-`CHURRO_NPU=true` lets the NPU driver load (off by default: it froze an Arrow Lake laptop). The BIOS
-flash chip is always made inaccessible (the Googlebook image would otherwise be able to reflash it).
+Options: `--gfx native|mesa|soft` (default graphics stack, `native` = Google's ANGLE-on-Intel-Vulkan;
+switchable in the GRUB menu) and `--packs virt,gpu,storage[,wifi,i915]` (`wifi` = Atheros ath9k,
+drop it on machines with Intel Wi-Fi; `i915` = pre-Gen12 Intel graphics only).
+Hardware status and roadmap: [docs/05-hardware-support.md](docs/05-hardware-support.md).
+`CHURRO_NPU=true` lets the NPU driver load (off by default: it froze an Arrow Lake laptop).
+
+> ⚠ **Safety:** the Googlebook image updates firmware by itself at every boot (BIOS flash via
+> flashrom/futility, device firmware via fwupd, the security chip via gscutil over the TPM). On a
+> normal PC that can brick the BIOS, reflash SSDs/hubs/docks, or trigger BitLocker recovery.
+> Churro always removes those tools and blocks the SPI-flash and TPM drivers; there is no switch to
+> undo it. See [docs/05-hardware-support.md](docs/05-hardware-support.md#-safety-things-that-must-stay-disabled).
 
 Write `churro.img` (or a `.img.gz` of it) to a USB drive (Rufus "DD image", Etcher, `dd`), disable
 Secure Boot, boot. If it stops or hangs, boot the GRUB entry "debug": the log scrolls on screen,
-the machine halts on errors instead of rebooting, and everything is saved to `boot.log` on the
-stick's **CHURRO-LOG** drive (visible in Windows; the previous boot's log is `boot.prev.log`).
+the machine halts on errors instead of rebooting, and everything is saved on the stick's
+**CHURRO-LOG** drive (visible in Windows): `boot.log` (kernel + Android init) and `logcat.log`
+(Android's own log, e.g. why a service crashes); the previous boot's are `*.prev.log`.
 Install to a disk from any Linux live session: `sudo ./churro.sh install churro.img /dev/nvme0n1`.
 
 ## What the conversion does

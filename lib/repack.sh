@@ -49,7 +49,7 @@ erofs_repack() {
   losetup -d "$src"
   for f in "$@"; do
     [ -d "$f/$part" ] && overlay_apply "$f/$part" "$T/root"
-    [ -f "$f/patch-$part.sh" ] && bash "$f/patch-$part.sh" "$T/root"
+    [ -f "$f/patch-$part.sh" ] && CHURRO_SUPER=$super CHURRO_HERE=$HERE EROFS_BIN=$EROFS_BIN bash "$f/patch-$part.sh" "$T/root"
   done
   # lz4hc + 256K pclusters instead of Google's lz4 so the bigger tree still fits the old extent
   "$EROFS_BIN/mkfs.erofs" -zlz4hc,12 -C262144 -T0 -U "$uuid" --mount-point="$mp" \

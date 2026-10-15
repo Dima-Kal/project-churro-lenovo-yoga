@@ -34,3 +34,11 @@ done
 # 3. graphics props move from build.prop to boot-time selection (see zz-churro-gfx.rc)
 sed -i -E '/^(ro\.hardware\.egl|ro\.hardware\.vulkan|ro\.hwui\.use_vulkan|debug\.renderengine\.vulkan|debug\.renderengine\.backend)=/d' "$V/build.prop"
 echo "   vendor: Mesa installed (+libs:$added)"
+
+# 4. every DRM node is a GPU/display device. The image only labels card0/card1/renderD128/129;
+# with simpledrm + vgem in front, the real GPU becomes card2 (labelled plain "device") and
+# SurfaceFlinger/composer get SELinux denials -> abort loop. In place: keeps the file's xattr.
+grep -q 'card\[0-9\]' "$V/etc/selinux/vendor_file_contexts" || cat >> "$V/etc/selinux/vendor_file_contexts" <<'EOF'
+/dev/dri/card[0-9]+          u:object_r:gpu_device:s0
+/dev/dri/renderD[0-9]+       u:object_r:gpu_device:s0
+EOF

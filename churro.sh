@@ -119,23 +119,26 @@ EOF
     # place, so the FAT/directory never change at boot and a power cut can't corrupt them.
     local lm; lm=$(mktemp -d); mount "${LOOP}p$ln" "$lm"
     head -c $((64 << 20)) /dev/zero | tr '\0' '\n' > "$lm/boot.log"
-    cp "$lm/boot.log" "$lm/boot.prev.log"
+    for f in boot.prev.log logcat.log logcat.prev.log; do cp "$lm/boot.log" "$lm/$f"; done
     umount "$lm"; rmdir "$lm"
   fi
 
-  # Vendor cmdline, made safe for a non-Googlebook PC:
+  # Vendor cmdline, made safe for a non-Googlebook PC (!! SAFETY-CRITICAL, keep it this way !!):
   # - BIOS flash read-only: drop spi-intel.writeable=1 / ignore_protection_status=1 and blacklist
   #   the SPI flash drivers outright (Googlebooks flash their own firmware from Android);
+  # - TPM drivers blacklisted: the image's gscutil/check_tpm_clear send Google-security-chip
+  #   commands to /dev/tpm0 at every boot. On a PC that is the TPM Windows/BitLocker depends on.
+  #   Churro uses software security, nothing here needs the TPM;
   # - NPU driver blocked unless CHURRO_NPU=true (see top).
   # module_blacklist is a single kernel parameter (the last one wins), so extend the vendor's.
-  local vcmd blk=spi_intel,spi_intel_pci
+  local vcmd blk=spi_intel,spi_intel_pci,tpm,tpm_tis,tpm_tis_core,tpm_crb,tpm_tis_spi,tpm_tis_i2c_cr50
   [ "$CHURRO_NPU" = true ] || blk="$blk,intel_vpu"
   vcmd=$(sed -E 's/ ?spi-intel\.(writeable|ignore_protection_status)=[^ ]*//g' "$W/vboot/cmdline")
   case $vcmd in
     *module_blacklist=*) vcmd=$(printf '%s' "$vcmd" | sed -E "s/module_blacklist=([^ ]*)/module_blacklist=\1,$blk/") ;;
     *) vcmd="$vcmd module_blacklist=$blk" ;;
   esac
-  log "kernel cmdline: flash read-only, blacklisted: $blk"
+  log "kernel cmdline: flash read-only, no TPM, blacklisted: $blk"
 
   log "populating EFI-SYSTEM"
   esp_build "$(part EFI-SYSTEM)" "$W" "$vcmd" "$bsrc"
@@ -175,10 +178,10 @@ cmd_install() {
 # prepare everything (tools/prepare.sh) and build with the recommended defaults.
 cmd_auto() {
   local in=$1 out=$2; shift 2
-  local gfx=mesa kprof=generic packs=virt,gpu,storage
+  local gfx=native kprof=generic packs=virt,gpu,storage
   while [ $# -gt 0 ]; do case $1 in
     --gfx) gfx=$2; shift 2 ;; --kernel-profile) kprof=$2; shift 2 ;;
-    --packs) packs=$2; shift 2 ;;   # module packs from prepare.sh: virt,gpu,storage[,wifi]
+    --packs) packs=$2; shift 2 ;;   # module packs from prepare.sh: virt,gpu,storage[,wifi,i915]
     *) die "unknown option $1" ;; esac; done
   bash "$HERE/tools/prepare.sh" "$in" "$kprof"
   local envf; envf=$(ls -t "${CHURRO_CACHE:-/var/cache/churro}"/prepared-*.env | head -1)
@@ -187,7 +190,7 @@ cmd_auto() {
   local margs=() p; for p in ${packs//,/ }; do
     [ -d "$CHURRO_PACK_DIR/$p" ] || die "no module pack '$p' in $CHURRO_PACK_DIR"; margs+=(--modules "$CHURRO_PACK_DIR/$p"); done
   CHURRO_EXTRA_ARGS="androidboot.churro.gfx=$gfx ${CHURRO_EXTRA_ARGS:-}" \
-    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --features security-software,firmware-lockdown,gfx-mesa,debug-log "${margs[@]}"
+    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --features security-software,firmware-lockdown,firmware-extra,gfx-mesa,debug-log "${margs[@]}"
 }
 
 case ${1:-} in

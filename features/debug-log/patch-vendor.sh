@@ -13,9 +13,19 @@ cat >> "$S/vendor_sepolicy.cil" <<EOF
 (allow kernel_$V tmpfs_$V (dir (search getattr open read write add_name mounton)))
 (allow kernel_$V tmpfs_$V (chr_file (getattr open read write ioctl)))
 (allow kernel_$V tmpfs_$V (blk_file (create getattr open read write ioctl)))
-(allow kernel_$V self (capability (sys_admin mknod)))
+(allow kernel_$V self (capability (sys_admin mknod net_admin)))
 (allow kernel_$V sysfs_$V (dir (search getattr open read)))
 (allow kernel_$V sysfs_$V (file (getattr open read)))
+; logcat.log: read logd's reader socket, reached through /proc/1/root (init's mount namespace)
+(allow kernel_$V proc_$V (dir (search getattr open read)))
+(allow kernel_$V init_$V (dir (search getattr)))
+(allow kernel_$V init_$V (lnk_file (read getattr)))
+(allow kernel_$V init_$V (file (read)))
+(allow kernel_$V device_$V (dir (search getattr)))
+(allow kernel_$V socket_device_$V (dir (search getattr)))
+(allow kernel_$V logdr_socket_$V (sock_file (write getattr)))
+(allow kernel_$V logd_$V (unix_stream_socket (connectto)))
+(allow kernel_$V self (unix_stream_socket (create connect read write getopt setopt shutdown)))
 EOF
 rm -f "$S"/precompiled_sepolicy "$S"/precompiled_sepolicy.*.sha256
 echo "   vendor: SELinux rules for the boot logger, precompiled policy removed"

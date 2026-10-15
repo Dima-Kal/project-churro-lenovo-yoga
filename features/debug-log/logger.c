@@ -1,10 +1,11 @@
 // churro-logger: started by the kernel instead of /init (rdinit=/churro/logger, "debug" boot
-// entries only). Forks a child that copies the kernel log (which also carries Android init's
-// log) into boot.log on the CHURRO-LOG partition (FAT32, readable from Windows), then execs the
-// real /init as PID 1.
-// boot.log / boot.prev.log are created by churro.sh at a fixed size, filled with blank lines; the
-// logger only overwrites them in place (text ends at the first empty line), so the FAT and the
-// directory never change at boot: a hang + power button can't corrupt the file system.
+// entries only). Forks children that copy
+//   - the kernel log (which also carries Android init's messages) -> boot.log
+//   - Android's own log (logcat: main/system/crash buffers, read from logd) -> logcat.log
+// on the CHURRO-LOG partition (FAT32, readable from Windows), then execs the real /init as PID 1.
+// The *.log / *.prev.log files are created by churro.sh at a fixed size, filled with blank lines;
+// the logger only overwrites them in place (text ends at the first empty line), so the FAT and
+// the directory never change at boot: a hang + power button can't corrupt the file system.
 // Built static by churro.sh (host cc); runs before Android's init, so no bionic needed.
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -12,17 +13,22 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sched.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #define PARTNAME "CHURRO-LOG"
 #define LOG_SIZE (64 << 20)  // only used to recreate a log file deleted from Windows
-#define FULL_MSG "[churro-logger: boot.log full, logging stopped]\n"
+#define FULL_MSG "[churro-logger: log full, logging stopped]\n"
+#define BUF_MAX 65536
 
 static char io[65536];
 
@@ -50,7 +56,7 @@ static int find_part(unsigned *maj, unsigned *min) {
   return found;
 }
 
-// Report a failed step in the kernel log itself (visible on screen / serial), return.
+// Report a failed step in the kernel log itself (visible on screen / serial / boot.log).
 static void fail(const char *what) {
   char m[256];
   int e = errno, fd = open("kmsg", O_WRONLY | O_CLOEXEC);
@@ -97,14 +103,147 @@ static int open_log(const char *path) {
   return fd;
 }
 
-// "6,1234,5678901,-;message" -> "[    5.678901] message"
-static size_t format(char *rec, size_t n, char *out) {
-  rec[n] = 0;
-  if (rec[0] == ' ') return 0;  // continuation/dictionary line
-  char *semi = strchr(rec, ';'), *c1 = strchr(rec, ','), *c2 = c1 ? strchr(c1 + 1, ',') : NULL;
-  if (!semi || !c2) return 0;
-  unsigned long long us = strtoull(c2 + 1, NULL, 10);
-  return sprintf(out, "[%5llu.%06llu] %s", us / 1000000, us % 1000000, semi + 1);
+// A fixed-size log file written in place, with a write-behind buffer.
+struct sink {
+  int fd;
+  off_t pos, end;
+  size_t used;
+  char buf[BUF_MAX + 8300];
+};
+
+// Rotate in place (last boot's text -> prev, blanking prev's older text; blank cur), then open.
+static int sink_open(struct sink *s, const char *cur, const char *prv) {
+  int out = open_log(cur), prev = open_log(prv);
+  if (out < 0) return -1;
+  off_t size = lseek(out, 0, SEEK_END), len = text_len(out);
+  if (size < 4096) { errno = EFBIG; return -1; }
+  if (prev >= 0) {
+    off_t psize = lseek(prev, 0, SEEK_END), plen = text_len(prev), pos = 0;
+    off_t keep = len < psize ? len : psize;
+    while (pos < keep) {
+      ssize_t n = pread(out, io, keep - pos < (off_t)sizeof io ? keep - pos : (off_t)sizeof io, pos);
+      if (n <= 0 || pwrite(prev, io, n, pos) != n) break;
+      pos += n;
+    }
+    if (plen > pos) fill(prev, pos, plen < psize ? plen : psize);
+    fsync(prev);
+    close(prev);
+  }
+  if (fill(out, 0, len) || fsync(out)) return -1;
+  s->fd = out;
+  s->pos = 0;
+  s->end = size - (off_t)sizeof FULL_MSG;  // keep room for the "full" note
+  s->used = 0;
+  return 0;
+}
+
+// Write the buffer out and fsync. Returns -1 when the file is full (or broken): stop logging.
+static int sink_flush(struct sink *s) {
+  if (!s->used) return 0;
+  int full = s->pos + (off_t)s->used > s->end;
+  if (full) s->used = s->end - s->pos;  // ponytail: stop when full; ring buffer if that ever matters
+  if (pwrite(s->fd, s->buf, s->used, s->pos) != (ssize_t)s->used) { fail("writing log"); return -1; }
+  s->pos += s->used;
+  s->used = 0;
+  if (full && pwrite(s->fd, FULL_MSG, sizeof FULL_MSG - 1, s->pos) < 0) {}
+  fsync(s->fd);
+  return full ? -1 : 0;
+}
+
+// Kernel log: "6,1234,5678901,-;message" -> "[    5.678901] message"
+static void kmsg_loop(int k) {
+  static struct sink s;
+  if (sink_open(&s, "mnt/boot.log", "mnt/boot.prev.log")) { fail("opening boot.log"); return; }
+  static char rec[8193];
+  for (;;) {
+    ssize_t n = read(k, rec, sizeof rec - 1);
+    int drained = 0;
+    if (n > 0) {
+      rec[n] = 0;
+      char *semi = strchr(rec, ';'), *c1 = strchr(rec, ','), *c2 = c1 ? strchr(c1 + 1, ',') : NULL;
+      if (rec[0] != ' ' && semi && c2) {  // skip continuation/dictionary lines
+        unsigned long long us = strtoull(c2 + 1, NULL, 10);
+        s.used += sprintf(s.buf + s.used, "[%5llu.%06llu] %s", us / 1000000, us % 1000000, semi + 1);
+      }
+    } else if (errno == EPIPE) {
+      s.used += sprintf(s.buf + s.used, "[churro-logger: messages lost]\n");
+    } else if (errno == EAGAIN) {
+      drained = 1;
+    } else {
+      fail("reading kmsg");
+      return;
+    }
+    if (!drained && s.used < BUF_MAX) continue;
+    if (sink_flush(&s)) return;
+    if (drained) {
+      struct pollfd p = {k, POLLIN, 0};
+      poll(&p, 1, -1);
+    }
+  }
+}
+
+// Android log, straight from logd's reader socket (what logcat does). The socket lives in init's
+// mount namespace; proc/1/root reaches it from ours.
+struct logger_entry {
+  uint16_t len, hdr_size;
+  int32_t pid;
+  uint32_t tid, sec, nsec, lid, uid;
+};
+
+static void logcat_loop(void) {
+  static struct sink s;
+  if (sink_open(&s, "mnt/logcat.log", "mnt/logcat.prev.log")) { fail("opening logcat.log"); return; }
+  static const char prio[] = "??VDIWEFS";
+  static unsigned char pkt[5 * 1024 + 64];
+  for (;;) {
+    int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
+    struct sockaddr_un a = {.sun_family = AF_UNIX};
+    strcpy(a.sun_path, "proc/1/root/dev/socket/logdr");
+    if (fd < 0) return;
+    if (connect(fd, (struct sockaddr *)&a, sizeof a)) {  // logd not up yet (or restarting)
+      close(fd);
+      sleep(1);
+      continue;
+    }
+    // big receive buffer: logd drops readers that fall behind (history burst at connect, fsyncs)
+    int rcv = 16 << 20;
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &rcv, sizeof rcv))
+      setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof rcv);  // capped at rmem_max
+    const char *cmd = "stream lids=0,1,3,4";  // main, radio, system, crash
+    if (write(fd, cmd, strlen(cmd)) < 0) { close(fd); sleep(1); continue; }
+    for (;;) {
+      ssize_t n = recv(fd, pkt, sizeof pkt - 1, s.used ? MSG_DONTWAIT : 0);
+      if (n < 0 && errno == EAGAIN) {  // drained: persist, then block for more
+        if (sink_flush(&s)) return;
+        continue;
+      }
+      if (n <= 0) break;  // logd went away: reconnect
+      struct logger_entry *h = (struct logger_entry *)pkt;
+      size_t hs = h->hdr_size >= 20 ? h->hdr_size : sizeof *h;
+      if ((size_t)n < hs + 2) continue;
+      pkt[n] = 0;
+      unsigned char *p = pkt + hs, *end = pkt + n;
+      const char *tag = (const char *)p + 1;
+      char *msg = (char *)p + 1 + strnlen(tag, end - p - 1) + 1;
+      if ((unsigned char *)msg > end) msg = (char *)end;
+      time_t t = h->sec;
+      struct tm tm;
+      gmtime_r(&t, &tm);
+      s.used += sprintf(s.buf + s.used, "%02d:%02d:%02d.%03u %5d %5u %c %s: ", tm.tm_hour, tm.tm_min,
+                        tm.tm_sec, h->nsec / 1000000, h->pid, h->tid, p[0] < 9 ? prio[p[0]] : '?', tag);
+      // one entry per line; continuation lines indented (an empty line would end the log text)
+      for (char *c = msg; *c && s.used < BUF_MAX + 8000; c++) {
+        if (*c == '\n') {
+          if (c[1]) s.used += sprintf(s.buf + s.used, "\n    ");
+        } else {
+          s.buf[s.used++] = *c;
+        }
+      }
+      s.buf[s.used++] = '\n';
+      if (s.used >= BUF_MAX && sink_flush(&s)) return;
+    }
+    close(fd);
+  }
 }
 
 static void logger(void) {
@@ -116,8 +255,9 @@ static void logger(void) {
   // relative paths from here on: init later deletes the ramdisk (incl. /churro-log) but our cwd
   // keeps this tmpfs alive. No devtmpfs in GKI -> make the device nodes ourselves.
   mkdir("sys", 0700);
+  mkdir("proc", 0700);
   mkdir("mnt", 0700);
-  if (mount("sysfs", "sys", "sysfs", 0, NULL)) return;
+  if (mount("sysfs", "sys", "sysfs", 0, NULL) || mount("proc", "proc", "proc", 0, NULL)) return;
   mknod("kmsg", S_IFCHR | 0600, makedev(1, 11));
   int k = open("kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
   if (k < 0) return;
@@ -131,56 +271,11 @@ static void logger(void) {
   }
   if (mknod("part", S_IFBLK | 0600, makedev(maj, min))) { fail("mknod"); return; }
   if (mount("part", "mnt", "vfat", MS_NOATIME, NULL)) { fail("mounting " PARTNAME); return; }
-  int out = open_log("mnt/boot.log"), prev = open_log("mnt/boot.prev.log");
-  if (out < 0) { fail("opening boot.log"); return; }
-  off_t size = lseek(out, 0, SEEK_END), len = text_len(out);
-  if (size < 4096) { errno = EFBIG; fail("boot.log too small"); return; }
-
-  // Rotate in place: last boot's text -> boot.prev.log (blanking its older, longer text), then
-  // blank boot.log's old text.
-  if (prev >= 0) {
-    off_t psize = lseek(prev, 0, SEEK_END), plen = text_len(prev), pos = 0;
-    off_t keep = len < psize ? len : psize;
-    while (pos < keep) {
-      ssize_t n = pread(out, io, keep - pos < (off_t)sizeof io ? keep - pos : (off_t)sizeof io, pos);
-      if (n <= 0 || pwrite(prev, io, n, pos) != n) break;
-      pos += n;
-    }
-    if (plen > pos) fill(prev, pos, plen < psize ? plen : psize);
-    fsync(prev);
-    close(prev);
+  if (fork() == 0) {
+    logcat_loop();
+    _exit(0);
   }
-  if (fill(out, 0, len) || fsync(out)) { fail("blanking boot.log"); return; }
-
-  static char rec[8193], buf[65536 + 8300];
-  size_t used = 0;
-  off_t pos = 0, end = size - (off_t)sizeof FULL_MSG;  // keep room for the "full" note
-  for (;;) {
-    ssize_t n = read(k, rec, sizeof rec - 1);
-    int drained = 0;
-    if (n > 0) used += format(rec, n, buf + used);
-    else if (errno == EPIPE) used += sprintf(buf + used, "[churro-logger: messages lost]\n");
-    else if (errno == EAGAIN) drained = 1;
-    else { fail("reading kmsg"); return; }
-    if (!drained && used < 65536) continue;
-    if (used) {  // drained or buffer full: persist now
-      int full = pos + (off_t)used > end;
-      if (full) used = end - pos;  // ponytail: stop when full; a ring buffer if that ever matters
-      if (pwrite(out, buf, used, pos) != (ssize_t)used) { fail("writing boot.log"); return; }
-      pos += used;
-      used = 0;
-      if (full) {
-        if (pwrite(out, FULL_MSG, sizeof FULL_MSG - 1, pos) < 0) {}
-        fsync(out);
-        return;
-      }
-      fsync(out);
-    }
-    if (drained) {
-      struct pollfd p = {k, POLLIN, 0};
-      poll(&p, 1, -1);
-    }
-  }
+  kmsg_loop(k);
 }
 
 int main(int argc, char **argv) {

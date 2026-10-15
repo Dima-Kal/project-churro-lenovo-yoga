@@ -63,11 +63,23 @@ files get a sibling's label or an explicit one.
 * `security-trusty-vm` (experimental) — keep Trusty, run the security VM non-protected or
   protected (`androidboot.churro.security_vm=`). Only useful on hardware where x86 pKVM works;
   the KeyMint TA still needs a DICE chain + GSC.
-* `firmware-lockdown` (default) — Googlebooks flash their own coreboot/EC/VPD from Android. The
-  build removes `flashrom`, `futility`, `vpd`, `crossystem`, `fwtool`, `elogtool` and their
-  executor HALs; independently, `churro.sh` always strips `spi-intel.writeable=1` /
-  `ignore_protection_status=1` from the kernel cmdline and blacklists `spi_intel`/`spi_intel_pci`,
-  so the BIOS flash chip has no driver at all.
+* `firmware-lockdown` (default, **safety-critical — never drop it for a PC build**) — Googlebooks
+  update their own firmware from Android automatically and without asking. Removed: `flashrom`,
+  `futility`, `vpd`, `crossystem`, `fwtool`, `elogtool` + executor HALs (coreboot/EC/VPD), and
+  `fwupd` + its boot-time blocking update script + cabinets (it runs at *every* boot with
+  `ApprovalRequired=false` against the public LVFS and Googlebook peripheral cabinets: on a PC it
+  could reflash SSDs, USB hubs, cameras, docks, Thunderbolt controllers). Independently,
+  `churro.sh` always strips `spi-intel.writeable=1` / `ignore_protection_status=1` and blacklists
+  the SPI flash drivers (`spi_intel`, `spi_intel_pci`) and the TPM drivers (`tpm`, `tpm_tis*`,
+  `tpm_crb`): the image's `gscutil` and `check_tpm_clear` send Google-security-chip commands to
+  `/dev/tpm0` at every boot, and on a PC that is the TPM Windows/BitLocker depends on.
+  There is deliberately no switch to turn any of this back on.
+* `firmware-extra` (default) — firmware the image's own drivers declare (`modinfo -F firmware` over
+  all vendor_dlkm/system_dlkm modules, plus `extra.txt` for runtime-built names like Intel
+  Bluetooth) but the image lacks, fetched from a pinned linux-firmware tag
+  (`CHURRO_LINUX_FIRMWARE`, cached in `$CHURRO_CACHE/linux-firmware-<tag>`) into
+  `/vendor/firmware`, labelled like that dir. Patch scripts get `CHURRO_SUPER`/`CHURRO_HERE`/
+  `EROFS_BIN` so they can read other LP partitions.
 * NPU: `intel_vpu` is blacklisted unless `CHURRO_NPU=true` (top of `churro.sh`): the image only
   has Panther Lake NPU firmware and on Arrow Lake the failed probe froze the machine.
 * `debug-log` (default) — boot log to a file you can read from Windows. The "debug" GRUB entries
@@ -79,7 +91,11 @@ files get a sibling's label or an explicit one.
   by the build at 64 MiB, filled with blank lines, and only overwritten in place (text ends at the
   first empty line; rotation copies in place too), so FAT and directory entries never change at
   boot — appending had left the FAT inconsistent after a power cut on a real stick. Full file →
-  the logger writes a "full" note and stops (a normal boot is ~1–3 MiB). The child stays in the `kernel` SELinux
+  the logger writes a "full" note and stops (a normal boot is ~1–3 MiB). A second child streams
+  Android's log into `logcat.log` the way logcat does: it connects to logd's reader socket
+  (`/dev/socket/logdr`, reached via `/proc/1/root` because the logger lives in its own mount
+  namespace), sends `stream lids=0,1,3,4` (main, radio, system, crash) with a 16 MiB receive
+  buffer (logd drops slow readers), and writes `HH:MM:SS.mmm pid tid P tag: msg` lines (UTC). The child stays in the `kernel` SELinux
   domain, so the feature adds the needed rules to the vendor policy and drops the precompiled
   policy (init compiles it at boot). Feature hooks used: `build-ramdisk.sh`, `cmdline-debug`.
 * graphics (WIP) — Mesa built with the NDK (`gfx/build-mesa.sh`: iris/crocus/virgl/softpipe +
