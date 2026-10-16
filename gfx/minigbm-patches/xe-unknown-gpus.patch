@@ -1,0 +1,51 @@
+--- a/xe.c
++++ b/xe.c
+@@ -398,6 +398,39 @@
+ 	return true;
+ }
+ 
++/*
++ * Churro: a GPU missing from the ID lists above (e.g. Arrow Lake) is not rejected: the kernel
++ * reports its graphics IP version on Meteor Lake and newer (GMD_ID). Older GPUs report 0 and
++ * are Gen12, the oldest generation the xe kernel driver runs.
++ */
++static void xe_info_from_gt_ip(struct driver *drv, struct xe_device *xe)
++{
++	struct drm_xe_device_query query = { .query = DRM_XE_DEVICE_QUERY_GT_LIST };
++	struct drm_xe_query_gt_list *gts;
++	uint16_t major = 0, minor = 0;
++	uint32_t i;
++
++	if (!drmIoctl(drv->fd, DRM_IOCTL_XE_DEVICE_QUERY, &query) &&
++	    (gts = calloc(1, query.size))) {
++		query.data = (uintptr_t)gts;
++		if (!drmIoctl(drv->fd, DRM_IOCTL_XE_DEVICE_QUERY, &query)) {
++			for (i = 0; i < gts->num_gt; i++) {
++				if (gts->gt_list[i].type == DRM_XE_QUERY_GT_TYPE_MAIN) {
++					major = gts->gt_list[i].ip_ver_major;
++					minor = gts->gt_list[i].ip_ver_minor;
++				}
++			}
++		}
++		free(gts);
++	}
++
++	xe->graphics_version = major >= 20 ? major : 12;
++	xe->is_mtl_or_newer = major > 12 || (major == 12 && minor >= 70);
++	drv_logi("Xe device 0x%x not in tables: graphics IP %u.%u, using version %u%s\n",
++		 xe->device_id, major, minor, xe->graphics_version,
++		 xe->is_mtl_or_newer ? " (Meteor Lake or newer)" : "");
++}
++
+ static int xe_init(struct driver *drv)
+ {
+ 	struct xe_device *xe;
+@@ -417,6 +450,8 @@
+ 
+ 	/* must call before xe->graphics_version is used anywhere else */
+ 	xe_info_from_device_id(xe);
++	if (!xe->graphics_version)
++		xe_info_from_gt_ip(drv, xe);
+ 
+ 	xe_get_modifier_order(xe);
+ 

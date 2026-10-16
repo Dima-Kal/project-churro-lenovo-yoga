@@ -127,3 +127,5 @@ kill (our `security-software` already hides it) and graphics-allocator memfd SEL
 - Debian live toolbox, macOS flows, ~11k lines of Python: heavy to maintain; the user prefers
   little or no Python. Revisit only if non-Linux users become the main audience.
 - Unencrypted userdata; hand-picked per-device firmware (our modinfo-driven list scales better).
+
+Updates/OTA (neither project supports them; what a no-system-edit Churro would need): see [07-updates.md](07-updates.md).

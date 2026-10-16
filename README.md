@@ -68,8 +68,8 @@ downloads from Google's public servers (GKI source/toolchains, emulator image) o
 |---|---|
 | `churro.sh` | `auto` / `build` / `install` |
 | `lib/` | boot image + vendor_boot parser, bootconfig, ramdisk, ESP/GRUB, EROFS/super/vbmeta patching (`lpinfo.py`) |
-| `features/` | partition overlays + patch scripts (`security-software`, `gfx-mesa`, `security-trusty-vm`) |
+| `features/` | partition overlays + patch scripts (`security-software`, `gfx-mesa`, `gfx-minigbm`, `security-trusty-vm`) |
 | `kmod/` | Churro kernel build (`build-kernel.sh`, `profiles/`), out-of-tree pack builds |
-| `gfx/` | Mesa for Android build |
+| `gfx/` | Mesa and minigbm (graphics allocator) builds for Android |
 | `tools/` | `prepare.sh` (fetch + build everything), module packs, QEMU helpers, dev helpers |
 | `docs/` | analysis, bring-up log, architecture, device notes; `docs/notes/` = scratch |

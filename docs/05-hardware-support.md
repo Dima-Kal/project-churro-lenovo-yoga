@@ -38,7 +38,7 @@ Intel) → `init trap invalid opcode` → panic; Asus T300FA (Broadwell) can't b
 
 | GPU | Today | Next |
 |---|---|---|
-| Intel iGPU / Arc (Gen12+) | image's own `xe` + `firmware-extra` (GuC/HuC/GSC/DMC from linux-firmware); default graphics = Google's stack (ANGLE on ANV); hwcomposer color pipeline off | Google's minigbm only accepts listed GPU IDs (no Arrow Lake) → generic allocator; ARL test: `test-minigbm-arl` |
+| Intel iGPU / Arc (Gen12+) | image's own `xe` + `firmware-extra` (GuC/HuC/GSC/DMC from linux-firmware); default graphics = Google's stack (ANGLE on ANV); hwcomposer color pipeline off; allocator rebuilt (`gfx-minigbm`): any Xe GPU, by graphics IP version | — (Arrow Lake verified on the MSI) |
 | Intel pre-Gen12 | opt-in `i915` pack (not default: it wedged Arrow Lake and broke `xe`) | only relevant with CPU emulation |
 | AMD | — | amdgpu module + firmware + Mesa radeonsi/radv + allocator |
 | NVIDIA | — | nouveau (Blackwell since Linux 6.16) + GSP firmware + Mesa NVK/Zink + allocator; NVIDIA's own driver is glibc-only, no Android build |
@@ -111,24 +111,30 @@ Order:
 
 None of this replaces what exists; each step is additive.
 
-### Generic graphics allocator (planned — next big step)
+### Graphics allocator (`gfx-minigbm`)
 
 Why it's needed even for Intel: Google's minigbm (`libminigbm_gralloc.so`, used by the allocator
-service *and* the mapper loaded into every app) only accepts GPU IDs from tables compiled into
-it. Found on the MSI: `Xe driver is not supported on your platform: 0x7d67` → every buffer
-allocation fails → SurfaceFlinger aborts. The tables cover ADL/RPL, Meteor Lake
-(`7d40 7d60 7d45 7d55 7dd5`), Lunar Lake, Panther Lake, Wildcat Lake — **no Arrow Lake**
-(`7d41 7d51 7d67 7dd1`), even though it's Meteor Lake graphics. The lists are compiled to
-immediate compares/bitmasks, so a binary patch can only *swap* IDs (`features/test-minigbm-arl`,
-test builds only: `auto --extra-features test-minigbm-arl`, retargets the `cmp $0x7dd5` to 7d67).
+service *and* the mapper loaded into every app; `libgbm.so`, used by the codec/camera HALs) only
+accepts GPU IDs from tables compiled into it. Found on the MSI: `Xe driver is not supported on
+your platform: 0x7d67` → every buffer allocation fails → SurfaceFlinger aborts. The tables cover
+ADL/RPL, Meteor Lake, Lunar Lake, Panther Lake — **no Arrow Lake** (`7d41 7d51 7d67 7dd1`), even
+though it's Meteor Lake graphics. (The interim test build retargeted one compiled ID compare.)
 
-Plan: replace Google's allocator + mapper + `libminigbm_gralloc.so` with ones built from AOSP's
-open-source minigbm (`external/minigbm`, same AIDL allocator V2 / mapper interfaces Android 17
-uses), built with the NDK outside Soong like Mesa:
-- preferred backend: **gbm_mesa** — minigbm frontend, allocation through Mesa's libgbm → works on
-  any GPU Mesa drives (Intel iris/ANV on i915 or xe, AMD radeonsi/radv, nouveau/NVK, virtio,
-  llvmpipe + dumb buffers for "no GPU"); needs Mesa built with `-Dgbm=enabled`;
-- fallback: minigbm's own backends with current ID tables (i915/xe/amdgpu/virtio/dumb).
-Must replace all three pieces together (they share internal C++ ABI), keep the same file names /
-SELinux labels / VINTF entries, and stay compatible with ANGLE/ANV's buffer metadata (gralloc4
-metadata, Intel modifiers). This also unblocks the "no usable GPU" and AMD/NVIDIA rows above.
+Step 1 (done, works on the MSI's Arrow Lake: detected as graphics IP 12.70): both libraries rebuilt from AOSP `external/minigbm`
+(android17-release, same source as Google's; Google's own build is slightly newer in the core but
+its C++ layout matches) by `gfx/build-minigbm.sh` with the NDK. Patch
+`gfx/minigbm-patches/xe-unknown-gpus.patch`: a GPU missing from the tables is no longer rejected;
+its generation comes from the graphics IP version the xe driver reports (Meteor Lake and newer;
+older Xe GPUs report none and are Gen12). Google's allocator service, mapper and gralloc0 module
+stay: our libraries are linked against the image's libc++ (`std::__1`) and the build checks that
+every symbol the image's binaries import from Google's versions exists in ours. Built for the
+plain x86-64 Android baseline: no extra CPU requirements (relevant for future old-CPU support).
+
+Next steps (each needs hardware to test):
+- AMD: compile minigbm's `amdgpu` backend (`DRV_AMDGPU`; static libdrm_amdgpu is already in the
+  Mesa sysroot; tiled allocations go through Mesa's radeonsi DRI driver, which needs Mesa with LLVM).
+- No GPU driver / unknown GPU: a fallback backend (vgem, or dumb buffers on simpledrm) tried
+  only after every real GPU, and never by opening `card0` before hwcomposer (that would take DRM
+  master away from it).
+- If Google's allocator service or mapper ever become the limit (new AIDL versions, metadata),
+  build them too: needs AIDL (already used by the build) + HIDL headers (gralloc4 types).

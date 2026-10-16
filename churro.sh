@@ -228,7 +228,7 @@ cmd_auto() {
     --gfx) gfx=$2; shift 2 ;; --kernel-profile) kprof=$2; shift 2 ;;
     --data-size) dsize=$2; shift 2 ;;   # userdata GiB (default 12: image ~26 GiB, needs a 32 GB stick)
     --packs) packs=$2; shift 2 ;;   # module packs from prepare.sh: virt,gpu,storage[,wifi,i915]
-    --extra-features) xfeat=,$2; shift 2 ;;   # e.g. test-minigbm-arl (test builds)
+    --extra-features) xfeat=,$2; shift 2 ;;   # extra features for test builds
     *) die "unknown option $1" ;; esac; done
   bash "$HERE/tools/prepare.sh" "$in" "$kprof"
   local envf; envf=$(ls -t "${CHURRO_CACHE:-/var/cache/churro}"/prepared-*.env | head -1)
@@ -237,7 +237,7 @@ cmd_auto() {
   local margs=() p; for p in ${packs//,/ }; do
     [ -d "$CHURRO_PACK_DIR/$p" ] || die "no module pack '$p' in $CHURRO_PACK_DIR"; margs+=(--modules "$CHURRO_PACK_DIR/$p"); done
   CHURRO_EXTRA_ARGS="androidboot.churro.gfx=$gfx ${CHURRO_EXTRA_ARGS:-}" \
-    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,debug-log$xfeat" "${margs[@]}"
+    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,gfx-minigbm,debug-log$xfeat" "${margs[@]}"
 }
 
 case ${1:-} in auto|build|install) deps_ensure ;; esac

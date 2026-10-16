@@ -99,6 +99,14 @@ files get a sibling's label or an explicit one.
   (`CHURRO_LINUX_FIRMWARE`, cached in `$CHURRO_CACHE/linux-firmware-<tag>`) into
   `/vendor/firmware`, labelled like that dir. Patch scripts get `CHURRO_SUPER`/`CHURRO_HERE`/
   `EROFS_BIN` so they can read other LP partitions.
+* `gfx-minigbm` (default) — the graphics buffer allocator libraries (`libminigbm_gralloc.so`,
+  `libgbm.so`) rebuilt from AOSP `external/minigbm` (android17-release, the source of Google's
+  own build) by `gfx/build-minigbm.sh` with the NDK, plus `gfx/minigbm-patches/`. Google's build
+  rejects every GPU missing from its ID tables; ours asks the xe kernel driver for the GPU's
+  graphics IP version instead (any Intel Xe GPU works). Google's allocator service, mapper and
+  gralloc0 module stay and load our libraries: they're linked against the image's own libc++
+  (platform `std::__1` ABI) and the build refuses to install them unless every symbol the image's
+  binaries take from Google's versions is present. Written in place (labels kept).
 * NPU: `intel_vpu` is blacklisted unless `CHURRO_NPU=true` (top of `churro.sh`): the image only
   has Panther Lake NPU firmware and on Arrow Lake the failed probe froze the machine.
 * `debug-log` (default) — boot log to a file you can read from Windows. The "debug" GRUB entries
