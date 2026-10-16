@@ -1,0 +1,45 @@
+--- a/drivers/gpu/drm/nouveau/nouveau_drm.c	2026-10-16 21:56:04.313809671 +0200
++++ b/drivers/gpu/drm/nouveau/nouveau_drm.c	2026-10-16 21:56:04.324809666 +0200
+@@ -853,6 +853,30 @@
+ 	}
+ }
+ 
++/*
++ * Churro: bind only when no other display controller is present (discrete-only laptops,
++ * NVIDIA-only desktops). On hybrid machines the other GPU drives the panel and Android's
++ * graphics, and binding here would also remove its firmware framebuffer (simpledrm).
++ * nouveau.hybrid=1 binds anyway.
++ */
++static int nouveau_hybrid;
++MODULE_PARM_DESC(hybrid, "bind even if another display controller is present (default: 0)");
++module_param_named(hybrid, nouveau_hybrid, int, 0400);
++
++static bool
++nouveau_other_display(void)
++{
++	struct pci_dev *d = NULL;
++
++	while ((d = pci_get_base_class(PCI_BASE_CLASS_DISPLAY, d))) {
++		if (d->vendor != PCI_VENDOR_ID_NVIDIA) {
++			pci_dev_put(d);
++			return true;
++		}
++	}
++	return false;
++}
++
+ static int nouveau_drm_probe(struct pci_dev *pdev,
+ 			     const struct pci_device_id *pent)
+ {
+@@ -861,6 +885,11 @@
+ 	const struct drm_format_info *format;
+ 	int ret;
+ 
++	if (!nouveau_hybrid && nouveau_other_display()) {
++		dev_info(&pdev->dev, "another display controller is present, not binding (nouveau.hybrid=1 overrides)\n");
++		return -ENODEV;
++	}
++
+ 	if (vga_switcheroo_client_probe_defer(pdev))
+ 		return -EPROBE_DEFER;
+ 

@@ -1,0 +1,2 @@
+# drm_hwcomposer needs atomic modesetting, which nouveau only exposes on request
+nouveau.atomic=1

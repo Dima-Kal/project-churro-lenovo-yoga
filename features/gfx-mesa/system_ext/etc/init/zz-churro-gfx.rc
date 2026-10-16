@@ -1,5 +1,7 @@
-# Project Churro graphics stack selection: androidboot.churro.gfx=native (default) | mesa | soft
-# native: Googlebook's own Intel Gen12+ stack (ANGLE on ANV)
-# mesa:   Mesa GL (iris/crocus/virgl) + Mesa Vulkan if androidboot.churro.vulkan is set
-# soft:   Mesa softpipe, works on any display (slow)
+# Project Churro graphics stack selection: androidboot.churro.gfx=native (default) | nouveau | mesa | soft
+# (the boot menu sets it from the GPUs it finds, see lib/esp.sh)
+# native:  Googlebook's own Intel Gen12+ stack (ANGLE on ANV)
+# nouveau: NVIDIA GPUs (nouveau display; GL by Zink on NVK, or nouveau GL on pre-Turing)
+# mesa:    Mesa GL (iris/crocus/virgl) + Mesa Vulkan if androidboot.churro.vulkan is set
+# soft:    Mesa softpipe, works on any display (slow)
 import /system_ext/etc/init/churro/gfx-${ro.boot.churro.gfx:-native}.rc

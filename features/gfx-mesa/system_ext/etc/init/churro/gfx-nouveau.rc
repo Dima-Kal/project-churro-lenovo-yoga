@@ -1,0 +1,11 @@
+# NVIDIA GPUs driven by nouveau (display + buffers in VRAM, minigbm's nouveau backend).
+# GL: Mesa picks by GPU - Zink on NVK for Turing and newer (required from Blackwell on),
+# nouveau GL (nvc0/nv50) for older ones. Vulkan for apps: NVK. RenderEngine/HWUI stay on GL:
+# NVK has no AHardwareBuffer support, which Skia's Vulkan backends need.
+on early-init
+    setprop ro.hardware.egl mesa
+    setprop ro.hardware.vulkan nouveau
+    setprop ro.hwui.use_vulkan false
+    setprop debug.renderengine.vulkan false
+    setprop debug.renderengine.backend skiaglthreaded
+    setprop debug.hwui.renderer skiagl

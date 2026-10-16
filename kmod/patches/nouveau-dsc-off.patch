@@ -1,0 +1,101 @@
+Churro: turn off DSC that the firmware (GOP) left enabled.
+
+High refresh eDP panels (e.g. 2560x1600@240) need DSC, so the laptop's GOP enables it on the
+head and in the panel. nouveau never programs DSC: the inherited head kept compressing at the new
+60 Hz mode while the panel (re-powered by link training) no longer decompressed -> a squeezed,
+noisy strip on the left quarter of the screen; with a second monitor on another head the update
+was rejected instead (core notifier timeout, black screen). Clear the head's DSC state on every
+modeset (Turing+ classes, the method offsets are the same up to GB20x) and the sink's DSC enable
+before link training.
+
+diff --git a/drivers/gpu/drm/nouveau/dispnv50/headc57d.c b/drivers/gpu/drm/nouveau/dispnv50/headc57d.c
+index 3f8ba49..54fe475 100644
+--- a/drivers/gpu/drm/nouveau/dispnv50/headc57d.c
++++ b/drivers/gpu/drm/nouveau/dispnv50/headc57d.c
+@@ -206,7 +206,7 @@ headc57d_mode(struct nv50_head *head, struct nv50_head_atom *asyh)
+ 	const int i = head->base.index;
+ 	int ret;
+ 
+-	if ((ret = PUSH_WAIT(push, 15)))
++	if ((ret = PUSH_WAIT(push, 18)))
+ 		return ret;
+ 
+ 	PUSH_MTHD(push, NVC57D, HEAD_SET_RASTER_SIZE(i),
+@@ -235,6 +235,12 @@ headc57d_mode(struct nv50_head *head, struct nv50_head_atom *asyh)
+ 	PUSH_MTHD(push, NVC57D, HEAD_SET_PIXEL_CLOCK_FREQUENCY_MAX(i),
+ 		  NVVAL(NVC57D, HEAD_SET_PIXEL_CLOCK_FREQUENCY_MAX, HERTZ, m->clock * 1000));
+ 
++	/* Churro: the firmware (GOP) may leave DSC enabled on a head (e.g. for a high
++	 * refresh eDP panel); nouveau never compresses, so always turn it off.
++	 */
++	PUSH_MTHD(push, NVC57D, HEAD_SET_DSC_CONTROL(i), 0x00000000,
++				HEAD_SET_DSC_PPS_CONTROL(i), 0x00000000);
++
+ 	/*XXX: HEAD_USAGE_BOUNDS, doesn't belong here. */
+ 	PUSH_MTHD(push, NVC57D, HEAD_SET_HEAD_USAGE_BOUNDS(i),
+ 		  NVDEF(NVC57D, HEAD_SET_HEAD_USAGE_BOUNDS, CURSOR, USAGE_W256_H256) |
+diff --git a/drivers/gpu/drm/nouveau/dispnv50/headca7d.c b/drivers/gpu/drm/nouveau/dispnv50/headca7d.c
+index eeaeb15..44c632a 100644
+--- a/drivers/gpu/drm/nouveau/dispnv50/headca7d.c
++++ b/drivers/gpu/drm/nouveau/dispnv50/headca7d.c
+@@ -222,7 +222,7 @@ headca7d_mode(struct nv50_head *head, struct nv50_head_atom *asyh)
+ 	const int i = head->base.index;
+ 	int ret;
+ 
+-	ret = PUSH_WAIT(push, 11);
++	ret = PUSH_WAIT(push, 14);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -251,6 +251,10 @@ headca7d_mode(struct nv50_head *head, struct nv50_head_atom *asyh)
+ 	PUSH_MTHD(push, NVCA7D, HEAD_SET_PIXEL_CLOCK_FREQUENCY_MAX(i),
+ 		  NVVAL(NVCA7D, HEAD_SET_PIXEL_CLOCK_FREQUENCY_MAX, HERTZ, m->clock * 1000));
+ 
++	/* Churro: firmware may leave DSC enabled, see headc57d_mode(). */
++	PUSH_MTHD(push, NVCA7D, HEAD_SET_DSC_CONTROL(i), 0x00000000,
++				HEAD_SET_DSC_PPS_CONTROL(i), 0x00000000);
++
+ 	return 0;
+ }
+ 
+diff --git a/drivers/gpu/drm/nouveau/include/nvhw/class/clc57d.h b/drivers/gpu/drm/nouveau/include/nvhw/class/clc57d.h
+index d4bad2d..8046d90 100644
+--- a/drivers/gpu/drm/nouveau/include/nvhw/class/clc57d.h
++++ b/drivers/gpu/drm/nouveau/include/nvhw/class/clc57d.h
+@@ -237,6 +237,8 @@
+ #define NVC57D_HEAD_SET_PIXEL_CLOCK_FREQUENCY_MAX_ADJ1000DIV1001                31:31
+ #define NVC57D_HEAD_SET_PIXEL_CLOCK_FREQUENCY_MAX_ADJ1000DIV1001_FALSE          (0x00000000)
+ #define NVC57D_HEAD_SET_PIXEL_CLOCK_FREQUENCY_MAX_ADJ1000DIV1001_TRUE           (0x00000001)
++#define NVC57D_HEAD_SET_DSC_CONTROL(a)                                          (0x000022D4 + (a)*0x00000400)
++#define NVC57D_HEAD_SET_DSC_PPS_CONTROL(a)                                      (0x000022D8 + (a)*0x00000400)
+ #define NVC57D_HEAD_SET_HEAD_USAGE_BOUNDS(a)                                    (0x00002030 + (a)*0x00000400)
+ #define NVC57D_HEAD_SET_HEAD_USAGE_BOUNDS_CURSOR                                2:0
+ #define NVC57D_HEAD_SET_HEAD_USAGE_BOUNDS_CURSOR_USAGE_NONE                     (0x00000000)
+diff --git a/drivers/gpu/drm/nouveau/include/nvhw/class/clca7d.h b/drivers/gpu/drm/nouveau/include/nvhw/class/clca7d.h
+index 0fec6fc..f58c776 100644
+--- a/drivers/gpu/drm/nouveau/include/nvhw/class/clca7d.h
++++ b/drivers/gpu/drm/nouveau/include/nvhw/class/clca7d.h
+@@ -653,6 +653,8 @@
+ #define NVCA7D_HEAD_SET_PIXEL_CLOCK_FREQUENCY_MAX_ADJ1000DIV1001                31:31
+ #define NVCA7D_HEAD_SET_PIXEL_CLOCK_FREQUENCY_MAX_ADJ1000DIV1001_FALSE          (0x00000000)
+ #define NVCA7D_HEAD_SET_PIXEL_CLOCK_FREQUENCY_MAX_ADJ1000DIV1001_TRUE           (0x00000001)
++#define NVCA7D_HEAD_SET_DSC_CONTROL(a)                                          (0x000022D4 + (a)*0x00000800)
++#define NVCA7D_HEAD_SET_DSC_PPS_CONTROL(a)                                      (0x000022D8 + (a)*0x00000800)
+ #define NVCA7D_HEAD_SET_HEAD_USAGE_BOUNDS(a)                                    (0x00002030 + (a)*0x00000800)
+ #define NVCA7D_HEAD_SET_HEAD_USAGE_BOUNDS_CURSOR                                2:0
+ #define NVCA7D_HEAD_SET_HEAD_USAGE_BOUNDS_CURSOR_USAGE_NONE                     (0x00000000)
+diff --git a/drivers/gpu/drm/nouveau/nouveau_dp.c b/drivers/gpu/drm/nouveau/nouveau_dp.c
+index 55691ec..4e757ba 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_dp.c
++++ b/drivers/gpu/drm/nouveau/nouveau_dp.c
+@@ -428,6 +428,10 @@ nouveau_dp_train(struct nouveau_encoder *outp, bool mst, u32 khz, u8 bpc)
+ 		}
+ 	}
+ 
++	/* Churro: the firmware may also leave the sink's DSC decoder on. */
++	if (drm_dp_dpcd_readb(aux, DP_DSC_ENABLE, &pwr) == 1 && pwr)
++		drm_dp_dpcd_writeb(aux, DP_DSC_ENABLE, 0);
++
+ 	for (int nr = outp->dp.link_nr; nr; nr >>= 1) {
+ 		for (int rate = 0; rate < outp->dp.rate_nr; rate++) {
+ 			if (outp->dp.rate[rate].rate * nr >= min_rate) {

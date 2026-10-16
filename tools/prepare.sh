@@ -84,8 +84,13 @@ bash "$HERE/tools/make-pack.sh" "$MD" "$P/virt" virtio_pci virtio_input
 # vendor iwlwifi stops loading. Only firmware-less drivers: first stage can't load firmware.
 bash "$HERE/tools/make-pack.sh" "$MD" "$P/wifi" cfg80211 mac80211 ath9k
 
-# --- 4. Mesa ---
-[ -f "$C/mesa/install/usr/local/lib64/libEGL_mesa.so" ] || bash "$HERE/gfx/build-mesa.sh" "$C/mesa"
+# --- 4. Mesa (rebuilt when its build script or patches change; NVK's Rust parts use the
+#     kernel's Android Rust toolchain + bindgen) ---
+MH=$(cat "$HERE/gfx/build-mesa.sh" "$HERE"/gfx/mesa-patches/*.patch 2>/dev/null | md5sum | cut -c1-8)
+if [ ! -f "$C/mesa/.built-$MH" ]; then
+  CHURRO_RUST=$S/rust CHURRO_BINDGEN=$S/bin CHURRO_CLANG=$S/clang bash "$HERE/gfx/build-mesa.sh" "$C/mesa"
+  rm -f "$C"/mesa/.built-*; touch "$C/mesa/.built-$MH"
+fi
 
 cat > "$C/prepared-$BID.env" <<EOF
 CHURRO_KERNEL=$K

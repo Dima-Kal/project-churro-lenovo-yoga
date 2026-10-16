@@ -1,0 +1,3 @@
+# Firmware never installed even if a driver lists it (shell globs, * matches across dirs).
+# NVIDIA GSP-RM 535: nouveau uses 570 when both are there (535 is only its fallback); ~60 MB.
+nvidia/*/gsp/*-535.113.01.bin

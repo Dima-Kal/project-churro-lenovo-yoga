@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Project Churro - make a Googlebook OS recovery image bootable on generic UEFI PCs.
-# Usage: sudo ./churro.sh auto  <recovery.bin> <out.img> [--gfx mesa|native|soft] [--packs virt,gpu,storage,wifi]
+# Usage: sudo ./churro.sh auto  <recovery.bin> <out.img> [--gfx auto|native|nouveau|mesa|soft] [--packs virt,gpu,storage,wifi]
 #        sudo ./churro.sh build <recovery.bin> <out.img> [--kernel dir] [--modules <pack dir>]...
 #                               [--features a,b] [--boot-source external|internal]
 #        sudo ./churro.sh install <churro.img> <disk>
@@ -98,7 +98,9 @@ cmd_build() {
   if [ "$repack" = 1 ] && [ ${#fdirs[@]} -gt 0 ]; then
     log "applying features: $feats (dm-verity off)"
     vbmeta_disable "$(part vbmeta_a)"
-    for p in vendor system_ext product odm; do
+    export CHURRO_KERNEL=$kdir   # for features adding our kernel's modules (gpu-nouveau)
+    # vendor_dlkm first: firmware-extra (a vendor feature) reads the module list from it
+    for p in vendor_dlkm vendor system_ext product odm; do
       for f in "${fdirs[@]}"; do
         if [ -d "$f/$p" ] || [ -f "$f/patch-$p.sh" ]; then erofs_repack "$(part super)" "${p}_a" "/$p" "${fdirs[@]}"; break; fi
       done
@@ -219,11 +221,12 @@ cmd_install() {
   log "done. Reboot, pick the disk in the UEFI boot menu (Secure Boot off)."
 }
 
-# auto <in.bin> <out.img> [--gfx mesa|native|soft] [--kernel-profile generic]:
+# auto <in.bin> <out.img> [--gfx auto|native|nouveau|mesa|soft] [--kernel-profile generic]:
 # prepare everything (tools/prepare.sh) and build with the recommended defaults.
+# --gfx auto (default): the boot menu picks the graphics stack from the GPUs it finds (esp.sh).
 cmd_auto() {
   local in=$1 out=$2; shift 2
-  local gfx=native kprof=generic packs=virt,gpu,storage xfeat="" dsize=12
+  local gfx=auto kprof=generic packs=virt,gpu,storage xfeat="" dsize=12
   while [ $# -gt 0 ]; do case $1 in
     --gfx) gfx=$2; shift 2 ;; --kernel-profile) kprof=$2; shift 2 ;;
     --data-size) dsize=$2; shift 2 ;;   # userdata GiB (default 12: image ~26 GiB, needs a 32 GB stick)
@@ -236,13 +239,13 @@ cmd_auto() {
   . "$envf"; export CHURRO_MESA CHURRO_MESA_SYSROOT
   local margs=() p; for p in ${packs//,/ }; do
     [ -d "$CHURRO_PACK_DIR/$p" ] || die "no module pack '$p' in $CHURRO_PACK_DIR"; margs+=(--modules "$CHURRO_PACK_DIR/$p"); done
-  CHURRO_EXTRA_ARGS="androidboot.churro.gfx=$gfx ${CHURRO_EXTRA_ARGS:-}" \
-    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,gfx-minigbm,debug-log$xfeat" "${margs[@]}"
+  [ "$gfx" = auto ] || CHURRO_EXTRA_ARGS="androidboot.churro.gfx=$gfx ${CHURRO_EXTRA_ARGS:-}"
+  cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,gfx-minigbm,gpu-nouveau,debug-log$xfeat" "${margs[@]}"
 }
 
 case ${1:-} in auto|build|install) deps_ensure ;; esac
 case ${1:-} in
-  auto) shift; [ $# -ge 2 ] || die "usage: churro.sh auto <in.bin> <out.img> [--gfx mesa|native|soft]"; cmd_auto "$@" ;;
+  auto) shift; [ $# -ge 2 ] || die "usage: churro.sh auto <in.bin> <out.img> [--gfx auto|native|nouveau|mesa|soft]"; cmd_auto "$@" ;;
   build) shift; [ $# -ge 2 ] || die "usage: churro.sh build <in.bin> <out.img> [opts]"; cmd_build "$@" ;;
   install) shift; [ $# -eq 2 ] || die "usage: churro.sh install <churro.img> <disk, e.g. /dev/nvme0n1>"; cmd_install "$@" ;;
   *) sed -n '2,6p' "$0"; exit 1 ;;

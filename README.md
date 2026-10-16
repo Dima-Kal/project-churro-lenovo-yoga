@@ -19,8 +19,10 @@ sudo ./churro.sh auto android-desktop_signed_recovery_image.bin churro.img   # p
 sudo tools/qemu-test.sh churro.img                                          # optional: QEMU test
 ```
 
-Options: `--gfx native|mesa|soft` (default graphics stack, `native` = Google's ANGLE-on-Intel-Vulkan;
-switchable in the GRUB menu) and `--packs virt,gpu,storage[,wifi,i915]` (`wifi` = Atheros ath9k,
+Options: `--gfx auto|native|nouveau|mesa|soft` (graphics stack; `auto`, the default, lets the boot
+menu pick from the GPUs present: Intel iGPU → `native` = Google's ANGLE-on-Intel-Vulkan, NVIDIA
+without iGPU → `nouveau`, else `soft`; switchable in the GRUB menu) and
+`--packs virt,gpu,storage[,wifi,i915]` (`wifi` = Atheros ath9k,
 drop it on machines with Intel Wi-Fi; `i915` = pre-Gen12 Intel graphics only) and `--data-size N`
 (Android's data partition in GiB, default 12; the image is then ~26 GiB, so use a USB stick of
 32 GB or more — the image's own 4 GiB fills up on first boot).
@@ -54,8 +56,10 @@ Install to a disk from any Linux live session: `sudo ./churro.sh install churro.
    needs x86 pKVM + pvmfw DICE + the Google Security Chip. Churro swaps in AOSP's software KeyMint
    (taken from Google's public Android 17 emulator image) and removes the Trusty/GSC HALs — the
    counterpart of Croissant's TPM emulator.
-4. **Graphics** (`features/gfx-mesa`): Mesa built from source with the NDK (iris, crocus, virgl,
-   softpipe; hasvk/radv optional); the stack is picked at boot (`androidboot.churro.gfx=`).
+4. **Graphics** (`features/gfx-mesa`, `gfx-minigbm`, `gpu-nouveau`): Mesa built from source with
+   the NDK (iris, crocus, nouveau, Zink, virgl, softpipe; NVK always, hasvk/radv optional), the
+   allocator rebuilt for any Intel Xe GPU and nouveau, nouveau + NVIDIA firmware for machines
+   without an iGPU; the stack is picked at boot (`androidboot.churro.gfx=`).
 5. **Partitions** are patched by unpacking/repacking EROFS with SELinux labels preserved; dm-verity
    is switched off (`vbmeta` flags, device reported as unlocked/orange).
 
@@ -68,7 +72,7 @@ downloads from Google's public servers (GKI source/toolchains, emulator image) o
 |---|---|
 | `churro.sh` | `auto` / `build` / `install` |
 | `lib/` | boot image + vendor_boot parser, bootconfig, ramdisk, ESP/GRUB, EROFS/super/vbmeta patching (`lpinfo.py`) |
-| `features/` | partition overlays + patch scripts (`security-software`, `gfx-mesa`, `gfx-minigbm`, `security-trusty-vm`) |
+| `features/` | partition overlays + patch scripts (`security-software`, `gfx-mesa`, `gfx-minigbm`, `gpu-nouveau`, `security-trusty-vm`) |
 | `kmod/` | Churro kernel build (`build-kernel.sh`, `profiles/`), out-of-tree pack builds |
 | `gfx/` | Mesa and minigbm (graphics allocator) builds for Android |
 | `tools/` | `prepare.sh` (fetch + build everything), module packs, QEMU helpers, dev helpers |

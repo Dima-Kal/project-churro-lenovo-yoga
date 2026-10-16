@@ -15,7 +15,7 @@ script (same model as Croissant downloading ChromeOS recovery images).
  │ vendor_boot_a ramdisks+cmd  │ ──► reused + Churro ramdisk (module packs) + bootconfig
  │ init_boot_a generic ramdisk │ ──► reused
  │ vbmeta_a                    │ ──► flags=3 (verity off) when partitions are patched
- │ super: system/vendor/...    │ ──► EROFS repack of vendor / system_ext by "features"
+ │ super: system/vendor/...    │ ──► EROFS repack of vendor_dlkm / vendor / system_ext by "features"
  │ userdata, metadata, misc …  │ ──► untouched (installer will reformat)
  └────────────────────────────┘
 ```
@@ -52,6 +52,13 @@ disk we booted from) and `androidboot.boot_source=external|internal`.
     the new `/dev/dri/card0` and the composer boots headless.
   - `sysfb-disable-any-gpu` — also drop it when the framebuffer belongs to *another* GPU
     (hybrid laptops with the boot framebuffer on an undriven dGPU).
+  - `nouveau-hybrid-guard` — nouveau binds only if no other display controller exists
+    (discrete-only laptops, desktops without iGPU); hybrid machines keep their iGPU stack.
+    `nouveau.hybrid=1` overrides.
+  - `nouveau-dsc-off` — turns off DSC the firmware left enabled (head + panel); nouveau
+    never compresses, so an inherited DSC state garbles the picture or stalls the display.
+  - `nouveau-up-01..09` — mainline GB20x / GSP-RM 570 display fixes, unchanged (r570
+    `DP_CONFIG_STREAM` size, GB20x head state, vblank vector, HDMI packets; with prerequisites).
 
 ### 3. Module packs (`--modules dir`)
 Directory of `.ko` + `modules.load` (+ `modules.dep`). Added to the first-stage ramdisk, loaded
@@ -98,12 +105,16 @@ files get a sibling's label or an explicit one.
   Bluetooth) but the image lacks, fetched from a pinned linux-firmware tag
   (`CHURRO_LINUX_FIRMWARE`, cached in `$CHURRO_CACHE/linux-firmware-<tag>`) into
   `/vendor/firmware`, labelled like that dir. Patch scripts get `CHURRO_SUPER`/`CHURRO_HERE`/
-  `EROFS_BIN` so they can read other LP partitions.
+  `EROFS_BIN` so they can read other LP partitions. Names linux-firmware only creates when
+  installed (WHENCE `Link:`) are resolved and become hardlinks to one copy; `skip.txt` lists
+  globs never installed (NVIDIA GSP 535). vendor_dlkm is repacked before vendor, so modules a
+  feature adds there (nouveau) get their firmware too.
 * `gfx-minigbm` (default) — the graphics buffer allocator libraries (`libminigbm_gralloc.so`,
   `libgbm.so`) rebuilt from AOSP `external/minigbm` (android17-release, the source of Google's
   own build) by `gfx/build-minigbm.sh` with the NDK, plus `gfx/minigbm-patches/`. Google's build
   rejects every GPU missing from its ID tables; ours asks the xe kernel driver for the GPU's
-  graphics IP version instead (any Intel Xe GPU works). Google's allocator service, mapper and
+  graphics IP version instead (any Intel Xe GPU works), and on nouveau allocates real buffers
+  (`NOUVEAU_GEM_NEW`, VRAM) instead of dumb buffers, which render nodes refuse. Google's allocator service, mapper and
   gralloc0 module stay and load our libraries: they're linked against the image's own libc++
   (platform `std::__1` ABI) and the build refuses to install them unless every symbol the image's
   binaries take from Google's versions is present. Written in place (labels kept).
@@ -125,8 +136,14 @@ files get a sibling's label or an explicit one.
   buffer (logd drops slow readers), and writes `HH:MM:SS.mmm pid tid P tag: msg` lines (UTC). The child stays in the `kernel` SELinux
   domain, so the feature adds the needed rules to the vendor policy and drops the precompiled
   policy (init compiles it at boot). Feature hooks used: `build-ramdisk.sh`, `cmdline-debug`.
-* graphics (WIP) — Mesa built with the NDK (`gfx/build-mesa.sh`: iris/crocus/virgl/softpipe +
-  hasvk/radv) for GPUs the image's Intel-only ANGLE/ANV stack can't drive.
+* `gpu-nouveau` (default) — NVIDIA GPUs: our kernel's `nouveau.ko` into vendor_dlkm
+  (`modules.dep`/`modules.alias`: ueventd loads it when an NVIDIA GPU appears, CRC-checked against Google's drm helper modules; Google's
+  `drm_ttm_helper` replaced by ours only because ours is a strict superset), `nouveau.atomic=1`
+  for drm_hwcomposer, and wildcard SELinux labels so apps can read any GPU's PCI ID files
+  (Mesa's device enumeration). Details: docs/05.
+* `gfx-mesa` (default) — Mesa built with the NDK (`gfx/build-mesa.sh`: iris/crocus/nouveau/zink/
+  virgl/softpipe + NVK, hasvk/radv on request) and the boot-time stack selection
+  (`androidboot.churro.gfx`, set by GRUB from PCI: native / nouveau / mesa / soft).
 
 ### 5. Installer
 The recovery image already has the installed layout, so `churro.sh install <img> <disk>` (from

@@ -14,13 +14,15 @@ put() { install -D -m 0644 -o root -g root "$1" "$2"; setfattr -n security.selin
 mkdir -p "$V/lib64/egl"; setfattr -n security.selinux -v u:object_r:vendor_file:s0 "$V/lib64/egl"
 for f in "$L"/libEGL_mesa.so "$L"/libGLESv1_CM_mesa.so "$L"/libGLESv2_mesa.so; do
   [ -f "$f" ] && put "$f" "$V/lib64/egl/$(basename "$f")"; done
-# Vulkan drivers are big (~20 MB each): only the requested ones (CHURRO_MESA_VULKAN="radeon intel_hasvk")
-for vk in ${CHURRO_MESA_VULKAN:-}; do
-  [ -f "$L/libvulkan_$vk.so" ] && put "$L/libvulkan_$vk.so" "$V/lib64/hw/vulkan.$vk.so"
+# Vulkan drivers are big (~20 MB each): NVK (GL on NVIDIA Turing+ is Zink on top of it) + the
+# requested ones (CHURRO_MESA_VULKAN="radeon intel_hasvk")
+vks=()
+for vk in nouveau ${CHURRO_MESA_VULKAN:-}; do
+  [ -f "$L/libvulkan_$vk.so" ] && put "$L/libvulkan_$vk.so" "$V/lib64/hw/vulkan.$vk.so" && vks+=("$V/lib64/hw/vulkan.$vk.so")
 done
 
 # 2. their non-platform dependencies (libgallium-*.so, libdrm_amdgpu.so, ...), closure
-todo=("$V"/lib64/egl/*_mesa.so "$V"/lib64/hw/vulkan.radeon.so "$V"/lib64/hw/vulkan.intel_hasvk.so); added=""
+todo=("$V"/lib64/egl/*_mesa.so "${vks[@]}"); added=""
 while [ ${#todo[@]} -gt 0 ]; do
   f=${todo[0]}; todo=("${todo[@]:1}"); [ -f "$f" ] || continue
   for n in $(readelf -d "$f" | awk '/NEEDED/ {gsub(/[][]/, "", $NF); print $NF}'); do

@@ -1,0 +1,29 @@
+--- a/src/util/os_misc.c	2026-10-16 22:39:46.459731293 +0200
++++ b/src/util/os_misc.c	2026-10-16 22:39:46.459731293 +0200
+@@ -179,8 +179,9 @@
+ os_get_android_option(const char *name)
+ {
+    static thread_local char os_android_option_value[PROP_VALUE_MAX];
+-   char key[PROP_NAME_MAX];
+-   char *p = key, *end = key + PROP_NAME_MAX;
++   /* Churro: names past PROP_NAME_MAX (31 chars, a legacy limit) were cut off */
++   char key[128];
++   char *p = key, *end = key + sizeof(key);
+    /* add "mesa." prefix if necessary: */
+    if (strstr(name, "MESA_") != name)
+       p += strlcpy(p, "mesa.", end - p);
+@@ -195,11 +196,11 @@
+ 
+    /* prefixes to search sorted by preference */
+    const char *prefices[] = { "debug.", "vendor.", "" };
+-   char full_key[PROP_NAME_MAX];
++   char full_key[128];
+    int len = 0;
+    for (int i = 0; i < ARRAY_SIZE(prefices); i++) {
+-      strlcpy(full_key, prefices[i], PROP_NAME_MAX);
+-      strlcat(full_key, key, PROP_NAME_MAX);
++      strlcpy(full_key, prefices[i], sizeof(full_key));
++      strlcat(full_key, key, sizeof(full_key));
+       len = __system_property_get(full_key, os_android_option_value);
+       if (len > 0)
+          return os_android_option_value;

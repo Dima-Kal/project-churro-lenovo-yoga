@@ -18,7 +18,7 @@ echo "Churro: cmdpath=$cmdpath root=$root"
 configfile "($root)/churro/grub.cfg"
 EOF
   grub-mkstandalone -O x86_64-efi -o "$mnt/EFI/BOOT/BOOTX64.EFI" \
-    --modules="part_gpt part_msdos fat normal linux echo all_video efi_gop efi_uga probe regexp configfile test cat efifwsetup search search_fs_file sleep" \
+    --modules="part_gpt part_msdos fat normal linux echo all_video efi_gop efi_uga probe regexp configfile test cat efifwsetup search search_fs_file sleep setpci" \
     --locales="" --fonts="" "boot/grub/grub.cfg=$stub"
   rm -f "$stub"
 
@@ -44,26 +44,40 @@ set base="\$vcmd androidboot.boot_part_uuid=\$puuid androidboot.boot_source=\$bo
 # init's fatal errors become panics; the image's lockup watchdogs only warn), plus feature debug
 # args (debug-log: boot.log on the CHURRO-LOG partition).
 set dbg="console=tty0 console=ttyS1,115200 ignore_loglevel printk.devkmsg=on panic=0 androidboot.init_fatal_panic=true softlockup_panic=0 nmi_watchdog=nopanic ${CHURRO_DEBUG_ARGS:-}"
+# Graphics stack from the GPUs present, appended last: a menu entry or extra_args naming one
+# comes first on the cmdline and wins (Android keeps the first value of a ro. property).
+# Intel iGPU (always at 00:02.0, hybrid laptops included) -> Googlebook's own stack; else an
+# NVIDIA GPU (display controller class 0300/0302) -> nouveau; else software rendering.
+set gfx=soft
+setpci -d 10de: -v nvclass CLASS_DEVICE
+if [ "\$nvclass" = "300" -o "\$nvclass" = "302" -o "\$nvclass" = "0300" -o "\$nvclass" = "0302" ]; then set gfx=nouveau; fi
+setpci -s 00:02.0 -v igpu VENDOR_ID
+if [ "\$igpu" = "8086" ]; then set gfx=native; fi
+set gfx="androidboot.churro.gfx=\$gfx"
 
 menuentry "Googlebook OS (Churro)" {
-  linux (\$root)/churro/kernel \$base \$extra_args
+  linux (\$root)/churro/kernel \$base \$extra_args \$gfx
   initrd (\$root)/churro/initrd.img
 }
 menuentry "Googlebook OS (Churro) - debug (log on screen + CHURRO-LOG/boot.log)" {
-  linux (\$root)/churro/kernel \$base \$dbg \$extra_args
+  linux (\$root)/churro/kernel \$base \$dbg \$extra_args \$gfx
   initrd (\$root)/churro/initrd.img
 }
 # Intel xe display: DSB poll errors at init left the panel undetected (hwc went headless) on
 # Arrow Lake. Flags go last so they override the vendor cmdline's xe.enable_psr=1.
 menuentry "Googlebook OS (Churro) - debug, safe display (Intel: no DSB/PSR/DC states)" {
-  linux (\$root)/churro/kernel \$base \$dbg \$extra_args xe.enable_dsb=0 xe.enable_psr=0 xe.enable_dc=0
+  linux (\$root)/churro/kernel \$base \$dbg \$extra_args xe.enable_dsb=0 xe.enable_psr=0 xe.enable_dc=0 \$gfx
   initrd (\$root)/churro/initrd.img
 }
 menuentry "Googlebook OS (Churro) - early debug (slow firmware console, for black screens)" {
-  linux (\$root)/churro/kernel \$base \$dbg earlycon=efifb \$extra_args
+  linux (\$root)/churro/kernel \$base \$dbg earlycon=efifb \$extra_args \$gfx
   initrd (\$root)/churro/initrd.img
 }
 submenu "Graphics: other stacks" {
+  menuentry "NVIDIA (nouveau) - debug" {
+    linux (\$root)/churro/kernel \$base androidboot.churro.gfx=nouveau \$dbg \$extra_args
+    initrd (\$root)/churro/initrd.img
+  }
   menuentry "Mesa (older Intel iris/crocus, AMD, virgl)" {
     linux (\$root)/churro/kernel \$base androidboot.churro.gfx=mesa \$extra_args
     initrd (\$root)/churro/initrd.img
