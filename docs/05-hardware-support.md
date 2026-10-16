@@ -170,8 +170,9 @@ use: nouveau (kernel), NVK (Vulkan), Zink (GL on Vulkan) or nouveau GL (Mesa).
   touches, system memory for CPU-only buffers.
 - **Rendering** (`gfx-nouveau.rc`): `ro.hardware.egl=mesa` - Mesa's loader picks Zink on NVK for
   Turing and newer (the only option from Blackwell on) and nouveau GL for older chips;
-  `ro.hardware.vulkan=nouveau` (NVK) for apps. SurfaceFlinger and HWUI stay on GL: NVK has no
-  AHardwareBuffer support, which Skia's Vulkan backends need. Mesa is built with NVK
+  `ro.hardware.vulkan=nouveau` (NVK) for apps. NVK has no AHardwareBuffer support upstream;
+  `gfx/mesa-patches/nvk-android-hardware-buffer.patch` adds it (Chrome's ANGLE-on-Vulkan needs
+  it). SurfaceFlinger and HWUI stay on GL for now (Skia's Vulkan backends are the next step). Mesa is built with NVK
   (`gfx/build-mesa.sh`): its Rust parts use the kernel's Android Rust toolchain (Android std,
   panic=abort) and bindgen, plus cbindgen and the small libelf Mesa's own Android CI uses.
 - **SELinux:** Mesa finds GPUs through libdrm, which reads the GPU's PCI ID files in sysfs from
