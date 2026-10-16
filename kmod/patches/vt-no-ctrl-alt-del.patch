@@ -1,0 +1,18 @@
+Churro: Ctrl+Alt+Del must not hard-reset the machine.
+
+We enable the VT console (fbcon, on-screen boot log), which also attaches the kernel's VT
+keyboard handler; its Ctrl+Alt+Del calls kernel_restart() at once (no Android shutdown, no
+filesystem sync). Googlebook kernels have no VT, so the keys never did this there. With C_A_D off
+the kernel only sends SIGINT to init, which ignores it.
+
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -25,7 +25,7 @@
+  * this indicates whether you can reboot with ctrl-alt-del: the default is yes
+  */
+ 
+-static int C_A_D = 1;
++static int C_A_D = 0;
+ struct pid *cad_pid;
+ EXPORT_SYMBOL(cad_pid);
+ 

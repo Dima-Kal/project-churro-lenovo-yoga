@@ -57,6 +57,8 @@ disk we booted from) and `androidboot.boot_source=external|internal`.
     `nouveau.hybrid=1` overrides.
   - `nouveau-dsc-off` — turns off DSC the firmware left enabled (head + panel); nouveau
     never compresses, so an inherited DSC state garbles the picture or stalls the display.
+  - `vt-no-ctrl-alt-del` — the VT keyboard handler (comes with fbcon) hard-reset the machine on
+    Ctrl+Alt+Del (no shutdown, no sync); now it only signals init, which ignores it.
   - `nouveau-up-01..09` — mainline GB20x / GSP-RM 570 display fixes, unchanged (r570
     `DP_CONFIG_STREAM` size, GB20x head state, vblank vector, HDMI packets; with prerequisites).
 
