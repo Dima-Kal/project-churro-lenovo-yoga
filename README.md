@@ -4,13 +4,15 @@ Make **Googlebook OS** (Android 17 "android-desktop" / Aluminium) recovery image
 installable on generic x86_64 UEFI PCs, by *converting* Google's official image locally instead
 of redistributing a ported one (same idea as Project Croissant / chromefy for ChromeOS).
 
-> Status: **experimental / bring-up** — boots to Android's system_server + SurfaceFlinger in QEMU;
-> first real-hardware target: Asus T300FA. See [`docs/`](docs/).
+> Status: **experimental** — boots to a usable Googlebook OS desktop on real hardware (Arrow Lake
+> laptop, from USB, "safe display" GRUB entry): Wi-Fi, USB input, Play Store / app installs work;
+> no sound or touchpad yet. Needs an Alder Lake-or-newer CPU. See [`docs/`](docs/).
 
 ## Quick start
 
-Linux or WSL2, as root, ~100 GB free (kernel + Mesa builds), Ubuntu 24.04 packages are installed
-on demand:
+Linux or WSL2, as root, ~100 GB free (kernel + Mesa builds). On Debian/Ubuntu (tested: 24.04) every
+missing package is installed automatically on the first run (`lib/deps.sh`); on other distros the
+script prints the list of packages to install:
 
 ```bash
 sudo ./churro.sh auto android-desktop_signed_recovery_image.bin churro.img   # prepare + build

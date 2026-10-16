@@ -11,7 +11,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 IMG=$1 PROF=${2:-generic}
 C=${CHURRO_CACHE:-/var/cache/churro}; mkdir -p "$C"
-. "$HERE/lib/bootimg.sh"
+. "$HERE/lib/bootimg.sh"; . "$HERE/lib/deps.sh"; deps_ensure   # also when run on its own
 log() { echo ">> $*"; }
 G="https://android.googlesource.com"
 

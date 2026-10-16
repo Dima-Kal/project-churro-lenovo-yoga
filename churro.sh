@@ -12,6 +12,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # boot. true = let it load (only for Panther Lake-class machines).
 CHURRO_NPU=${CHURRO_NPU:-false}
 . "$HERE/lib/bootimg.sh"; . "$HERE/lib/bootconfig.sh"; . "$HERE/lib/esp.sh"; . "$HERE/lib/ramdisk.sh"; . "$HERE/lib/repack.sh"
+. "$HERE/lib/deps.sh"
 
 die() { echo "churro: $*" >&2; exit 1; }
 log() { echo ">> $*"; }
@@ -235,6 +236,7 @@ cmd_auto() {
     cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,debug-log$xfeat" "${margs[@]}"
 }
 
+case ${1:-} in auto|build|install) deps_ensure ;; esac
 case ${1:-} in
   auto) shift; [ $# -ge 2 ] || die "usage: churro.sh auto <in.bin> <out.img> [--gfx mesa|native|soft]"; cmd_auto "$@" ;;
   build) shift; [ $# -ge 2 ] || die "usage: churro.sh build <in.bin> <out.img> [opts]"; cmd_build "$@" ;;
