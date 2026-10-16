@@ -53,6 +53,12 @@ menuentry "Googlebook OS (Churro) - debug (log on screen + CHURRO-LOG/boot.log)"
   linux (\$root)/churro/kernel \$base \$dbg \$extra_args
   initrd (\$root)/churro/initrd.img
 }
+# Intel xe display: DSB poll errors at init left the panel undetected (hwc went headless) on
+# Arrow Lake. Flags go last so they override the vendor cmdline's xe.enable_psr=1.
+menuentry "Googlebook OS (Churro) - debug, safe display (Intel: no DSB/PSR/DC states)" {
+  linux (\$root)/churro/kernel \$base \$dbg \$extra_args xe.enable_dsb=0 xe.enable_psr=0 xe.enable_dc=0
+  initrd (\$root)/churro/initrd.img
+}
 menuentry "Googlebook OS (Churro) - early debug (slow firmware console, for black screens)" {
   linux (\$root)/churro/kernel \$base \$dbg earlycon=efifb \$extra_args
   initrd (\$root)/churro/initrd.img

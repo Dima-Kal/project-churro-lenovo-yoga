@@ -75,7 +75,11 @@ files get a sibling's label or an explicit one.
   the KeyMint TA still needs a DICE chain + GSC.
 * `firmware-lockdown` (default, **safety-critical — never drop it for a PC build**) — Googlebooks
   update their own firmware from Android automatically and without asking. Removed: `flashrom`,
-  `futility`, `vpd`, `crossystem`, `fwtool`, `elogtool` + executor HALs (coreboot/EC/VPD), and
+  `futility`, `vpd`, `fwtool`, `elogtool` + the futility executor HAL (the VPD executor stays,
+  toothless without `vpd`: system_server blocks on it and would be killed); `crossystem` becomes a
+  no-op stub that accepts writes without touching anything (the boot-control HAL's
+  markBootSuccessful needs `crossystem fw_result=success` to succeed, else "Checkpoint commit
+  failed" reboots every boot), and
   `fwupd` + its boot-time blocking update script + cabinets (it runs at *every* boot with
   `ApprovalRequired=false` against the public LVFS and Googlebook peripheral cabinets: on a PC it
   could reflash SSDs, USB hubs, cameras, docks, Thunderbolt controllers). Independently,

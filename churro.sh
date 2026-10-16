@@ -23,11 +23,46 @@ trap cleanup EXIT
 # Partition by GPT label (labels are stable across Googlebook images, numbers might not be).
 part() { local n; n=$(sgdisk -p "$LOOP" | awk -v l="$1" '$NF == l {print $1; exit}'); [ -n "$n" ] || die "no partition $1"; echo "${LOOP}p$n"; }
 
+# pinfo <disk|image> <n>: "first last typeGUID uniqueGUID attrs name" of partition n
+pinfo() { sgdisk -i "$2" "$1" | awk -F': ' '/First sector/ {split($2,a," "); f=a[1]} /Last sector/ {split($2,a," "); l=a[1]}
+  /GUID code/ {split($2,a," "); t=a[1]} /unique GUID/ {u=$2} /Attribute flags/ {at=$2} /Partition name/ {n=$2; gsub("\x27","",n)}
+  END {print f, l, t, u, at, n}'; }
+# pmove <disk|image> <n> <first> <last>: re-create partition n at first..last, same type/GUID/attrs/name
+pmove() { local t u at nm; read -r _ _ t u at nm < <(pinfo "$1" "$2")
+  sgdisk -d "$2" -n "$2:$3:$4" -t "$2:$t" -u "$2:$u" -A "$2:=:$at" -c "$2:$nm" "$1" >/dev/null; }
+
+# userdata_last <disk|image>: recovery images end with ota_recovery_b *after* userdata (4 GiB), so
+# userdata can't grow. Move whatever follows it into the start of userdata's area (userdata is
+# formatted by Android on first boot, nothing to keep) and start userdata after it.
+userdata_last() {
+  local d=$1 un us ue ut uu ua unm after n s e
+  un=$(sgdisk -p "$d" | awk '$NF == "userdata" {print $1}'); [ -n "$un" ] || die "no userdata partition"
+  read -r us ue ut uu ua unm < <(pinfo "$d" "$un")
+  after=$(sgdisk -p "$d" | awk -v ue="$ue" '$1 ~ /^[0-9]+$/ && $2 > ue {print $1}')
+  [ -n "$after" ] || return 0
+  sgdisk -d "$un" "$d" >/dev/null   # free its range for the moved partitions, re-created below
+  for n in $after; do
+    read -r s e _ < <(pinfo "$d" "$n")
+    [ $((e - s + 1)) -lt $((ue - us + 1)) ] || die "partition $n doesn't fit in userdata's space"
+    log "moving partition $n before userdata"
+    dd if="$d" of="$d" bs=1M iflag=skip_bytes,count_bytes oflag=seek_bytes conv=notrunc status=none \
+       skip=$((s * 512)) seek=$((us * 512)) count=$(((e - s + 1) * 512))
+    pmove "$d" "$n" "$us" $((us + e - s)); us=$((us + e - s + 1))
+  done
+  sgdisk -n "$un:$us:$ue" -t "$un:$ut" -u "$un:$uu" -A "$un:=:$ua" -c "$un:$unm" "$d" >/dev/null
+}
+
+# grow_userdata <disk|image>: stretch the (last) userdata partition to the end of the disk
+grow_userdata() { local un us; sgdisk -e "$1" >/dev/null
+  un=$(sgdisk -p "$1" | awk '$NF == "userdata" {print $1}'); read -r us _ < <(pinfo "$1" "$un")
+  pmove "$1" "$un" "$us" 0; }
+
 cmd_build() {
   local in=$1 out=$2; shift 2
-  local packs=() bsrc=external feats=security-software,firmware-lockdown repack=1 kdir=""
+  local packs=() bsrc=external feats=security-software,firmware-lockdown repack=1 kdir="" dsize=0
   while [ $# -gt 0 ]; do case $1 in
     --modules) packs+=("$2"); shift 2 ;;
+    --data-size) dsize=$2; shift 2 ;;   # GiB for userdata (image grows; 0 = keep the image's 4 GiB)
     --features) feats=$2; shift 2 ;;
     --no-repack) repack=0; shift ;;     # dev: partitions already patched, only redo boot files
     --boot-source) bsrc=$2; shift 2 ;;
@@ -38,6 +73,15 @@ cmd_build() {
 
   if [ "$(realpath "$in")" != "$(realpath -m "$out")" ]; then
     log "copying $in -> $out (sparse)"; cp --sparse=always "$in" "$out"
+  fi
+  # userdata: Android 17 + Google apps fill the image's 4 GiB during the first boot (ENOSPC ->
+  # system_server crash loop -> RescueParty shutdown). Make it last, then grow it to $dsize GiB.
+  userdata_last "$out"
+  if [ "$dsize" -gt 0 ]; then
+    local un us ue cur; un=$(sgdisk -p "$out" | awk '$NF == "userdata" {print $1}'); read -r us ue _ < <(pinfo "$out" "$un")
+    cur=$(((ue - us + 1) * 512)); if [ "$cur" -lt $((dsize << 30)) ]; then
+      log "userdata: $((cur >> 20)) MiB -> $dsize GiB"
+      truncate -s +$(((dsize << 30) - cur)) "$out"; grow_userdata "$out"; fi
   fi
   LOOP=$(losetup -f --show -P "$out"); udevadm settle 2>/dev/null || sleep 1
   local W; W=$(mktemp -d /tmp/churro.XXXX)
@@ -160,12 +204,8 @@ cmd_install() {
   [ "$dsz" -ge "$isz" ] || die "target too small ($dsz < $isz bytes)"
   log "this ERASES $dst ($((dsz / 1024 / 1024 / 1024)) GiB). Type YES to continue:"; read -r a; [ "$a" = YES ] || die "aborted"
   log "writing image"; dd if="$img" of="$dst" bs=4M conv=fsync,sparse status=progress
-  sgdisk -e "$dst" >/dev/null
-  local p1; p1=$(sgdisk -i 1 "$dst")
-  local start guid name; start=$(sgdisk -i 1 "$dst" | awk '/First sector/ {print $3}')
-  guid=$(echo "$p1" | awk -F': ' '/unique GUID/ {print $2}'); name=$(echo "$p1" | awk -F"'" '/Partition name/ {print $2}')
-  log "growing $name to the end of the disk"
-  sgdisk -d 1 -n "1:$start:0" -t 1:8300 -u "1:$guid" -c "1:$name" "$dst" >/dev/null
+  log "growing userdata to the end of the disk"
+  userdata_last "$dst"; grow_userdata "$dst"
   partprobe "$dst" 2>/dev/null || blockdev --rereadpt "$dst" || true; sleep 2
   local espn esp mnt; espn=$(sgdisk -p "$dst" | awk '$NF == "EFI-SYSTEM" {print $1}')
   case $dst in *[0-9]) esp=${dst}p$espn ;; *) esp=$dst$espn ;; esac   # nvme0n1p12 vs sda12
@@ -178,9 +218,10 @@ cmd_install() {
 # prepare everything (tools/prepare.sh) and build with the recommended defaults.
 cmd_auto() {
   local in=$1 out=$2; shift 2
-  local gfx=native kprof=generic packs=virt,gpu,storage xfeat=""
+  local gfx=native kprof=generic packs=virt,gpu,storage xfeat="" dsize=12
   while [ $# -gt 0 ]; do case $1 in
     --gfx) gfx=$2; shift 2 ;; --kernel-profile) kprof=$2; shift 2 ;;
+    --data-size) dsize=$2; shift 2 ;;   # userdata GiB (default 12: image ~26 GiB, needs a 32 GB stick)
     --packs) packs=$2; shift 2 ;;   # module packs from prepare.sh: virt,gpu,storage[,wifi,i915]
     --extra-features) xfeat=,$2; shift 2 ;;   # e.g. test-minigbm-arl (test builds)
     *) die "unknown option $1" ;; esac; done
@@ -191,7 +232,7 @@ cmd_auto() {
   local margs=() p; for p in ${packs//,/ }; do
     [ -d "$CHURRO_PACK_DIR/$p" ] || die "no module pack '$p' in $CHURRO_PACK_DIR"; margs+=(--modules "$CHURRO_PACK_DIR/$p"); done
   CHURRO_EXTRA_ARGS="androidboot.churro.gfx=$gfx ${CHURRO_EXTRA_ARGS:-}" \
-    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,debug-log$xfeat" "${margs[@]}"
+    cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,debug-log$xfeat" "${margs[@]}"
 }
 
 case ${1:-} in
