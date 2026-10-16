@@ -13,6 +13,8 @@ without asking**. On any other PC each of these can damage hardware or lock you 
 | `spi-intel.writeable=1` + flashrom/futility/vpd/crossystem/elogtool | rewrites coreboot, EC, VPD in the SPI flash | **bricked BIOS** | flag stripped, SPI drivers blacklisted, tools removed |
 | `fwupd` + `fwupd_blocking_update` (every boot, `ApprovalRequired=false`, LVFS enabled) | updates touchscreen, camera, USB-hub firmware | reflashes any matching SSD, hub, dock, camera, Thunderbolt controller | removed |
 | `gscutil`, `check_tpm_clear` (every boot, `/dev/tpm0`) | updates / resets the Google security chip | sends vendor/clear commands to the PC's TPM → **BitLocker recovery, lost TPM keys** | TPM drivers blacklisted (the tools find no TPM) |
+| `efi_pstore` (built into the GKI kernel) | saves the kernel log into UEFI variables on every panic | fills the PC's NVRAM → some firmwares stop booting | `efi_pstore.pstore_disable=1` always on the cmdline (found via the GBRUNCH comparison, docs/06) |
+| vendor fstab `voldmanaged` entries: `/devices/*/nvme/nvme[1-9]*`, `/devices/*/mmc_host*`, `/devices/*/usb*` | SD card / USB sticks as storage | Android mounts (rw) or offers to *format* a PC's second NVMe or internal eMMC holding Windows; already mounts our own boot stick's CHURRO-LOG | **OPEN** — fstab override planned (docs/06). Today's MSI is safe only because its NVMe is behind Intel VMD, which the kernel can't see |
 
 Rules: these protections are in `churro.sh` and the default `firmware-lockdown` feature, and there
 are deliberately no switches to undo them. Anyone changing this must re-check the vendor and

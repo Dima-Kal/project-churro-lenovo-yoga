@@ -10,13 +10,21 @@ CHURRO_PKGS="gdisk dosfstools parted grub-common grub-efi-amd64-bin cpio attr km
   uuid-dev libselinux1-dev"
 
 deps_ensure() {
-  if ! command -v apt-get >/dev/null || ! command -v dpkg-query >/dev/null; then
-    echo ">> not Debian/Ubuntu: make sure the equivalents of these are installed:" $CHURRO_PKGS; return 0
-  fi
   local p miss=""
-  for p in $CHURRO_PKGS; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' || miss="$miss $p"; done
-  [ -n "$miss" ] || return 0
-  [ "$(id -u)" = 0 ] || { echo "churro: missing packages:$miss (run as root to install them)" >&2; exit 1; }
-  echo ">> installing missing packages:$miss"
-  apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $miss >/dev/null
+  if ! command -v apt-get >/dev/null || ! command -v dpkg-query >/dev/null; then
+    echo ">> not Debian/Ubuntu: make sure the equivalents of these are installed:" $CHURRO_PKGS
+  else
+    for p in $CHURRO_PKGS; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'ok installed' || miss="$miss $p"; done
+  fi
+  if [ -n "$miss" ]; then
+    [ "$(id -u)" = 0 ] || { echo "churro: missing packages:$miss (run as root to install them)" >&2; exit 1; }
+    echo ">> installing missing packages:$miss"
+    apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $miss >/dev/null
+  fi
+  # erofs-utils that can extract SELinux xattrs isn't packaged (Ubuntu 24.04 has 1.7.1): built once
+  # into tools/bin, which is not in git (a fresh clone or zip doesn't have it).
+  local b=$HERE/tools/bin
+  [ -x "$b/fsck.erofs" ] && [ -x "$b/dump.erofs" ] && [ -x "$b/mkfs.erofs" ] && return 0
+  echo ">> building erofs-utils into tools/bin (once)"
+  bash "$HERE/tools/build-erofs-utils.sh"
 }

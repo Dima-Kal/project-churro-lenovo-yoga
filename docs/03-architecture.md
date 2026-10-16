@@ -47,7 +47,9 @@ disk we booted from) and `androidboot.boot_source=external|internal`.
     display driver registers. Google's prebuilt xe never does it (no EFI framebuffer on
     Googlebooks), so simpledrm stayed and hwcomposer used it as the primary display (black screen).
     Side effect: xe has no fbdev, so the on-screen debug log stops when xe loads (~5 s); the
-    CHURRO-LOG files are unaffected.
+    CHURRO-LOG files are unaffected. The GPU then reuses simpledrm's `card0`, which needs
+    ueventd's parallel main loop off (gfx-mesa): otherwise simpledrm's late "remove" can delete
+    the new `/dev/dri/card0` and the composer boots headless.
   - `sysfb-disable-any-gpu` — also drop it when the framebuffer belongs to *another* GPU
     (hybrid laptops with the boot framebuffer on an undriven dGPU).
 
@@ -86,7 +88,10 @@ files get a sibling's label or an explicit one.
   `churro.sh` always strips `spi-intel.writeable=1` / `ignore_protection_status=1` and blacklists
   the SPI flash drivers (`spi_intel`, `spi_intel_pci`) and the TPM drivers (`tpm`, `tpm_tis*`,
   `tpm_crb`): the image's `gscutil` and `check_tpm_clear` send Google-security-chip commands to
-  `/dev/tpm0` at every boot, and on a PC that is the TPM Windows/BitLocker depends on.
+  `/dev/tpm0` at every boot, and on a PC that is the TPM Windows/BitLocker depends on. It also
+  adds `efi_pstore.pstore_disable=1` (no kernel crash dumps into the PC's UEFI NVRAM), and the
+  feature strips board tuning from the vendor rc files (`init.ruby.rc` writes the Lenovo
+  laptop's RAPL power limits and a TCC offset to whatever CPU it runs on).
   There is deliberately no switch to turn any of this back on.
 * `firmware-extra` (default) — firmware the image's own drivers declare (`modinfo -F firmware` over
   all vendor_dlkm/system_dlkm modules, plus `extra.txt` for runtime-built names like Intel

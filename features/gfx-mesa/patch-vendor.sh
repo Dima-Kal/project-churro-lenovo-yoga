@@ -31,11 +31,14 @@ while [ ${#todo[@]} -gt 0 ]; do
   done
 done
 
+# edit <sed script> <file>: rewrite in place. `sed -i` makes a new file, which drops the SELinux
+# xattr on a non-SELinux build host (build.prop ended up without its SELinux label).
+edit() { local c; c=$(sed -E "$1" "$2"); printf '%s\n' "$c" > "$2"; }
 # 3. graphics props move from build.prop to boot-time selection (see zz-churro-gfx.rc)
-sed -i -E '/^(ro\.hardware\.egl|ro\.hardware\.vulkan|ro\.hwui\.use_vulkan|debug\.renderengine\.vulkan|debug\.renderengine\.backend)=/d' "$V/build.prop"
+edit '/^(ro\.hardware\.egl|ro\.hardware\.vulkan|ro\.hwui\.use_vulkan|debug\.renderengine\.vulkan|debug\.renderengine\.backend)=/d' "$V/build.prop"
 # drm_hwcomposer is set to require the KMS COLOR_PIPELINE plane property, which only Panther
 # Lake-class display hardware has; elsewhere it rejects every plane. Generic PCs: off.
-sed -i 's/^vendor\.hwc\.drm\.enable_color_pipeline=true$/vendor.hwc.drm.enable_color_pipeline=false/' "$V/build.prop"
+edit 's/^vendor\.hwc\.drm\.enable_color_pipeline=true$/vendor.hwc.drm.enable_color_pipeline=false/' "$V/build.prop"
 echo "   vendor: Mesa installed (+libs:$added)"
 
 # 4. every DRM node is a GPU/display device. The image only labels card0/card1/renderD128/129;
@@ -45,3 +48,9 @@ grep -q 'card\[0-9\]' "$V/etc/selinux/vendor_file_contexts" || cat >> "$V/etc/se
 /dev/dri/card[0-9]+          u:object_r:gpu_device:s0
 /dev/dri/renderD[0-9]+       u:object_r:gpu_device:s0
 EOF
+
+# 5. ueventd runs live uevents on a thread pool (parallel_ueventd_main_loop). When the GPU
+# driver takes over from simpledrm, simpledrm's "remove card0" and the GPU's "add card0" belong
+# to different devices but name the same node: run out of order, the remove deletes the new
+# /dev/dri/card0 -> drm_hwcomposer finds no display, boots headless (~1 boot in 2). Sequential.
+edit 's/^parallel_ueventd_main_loop enabled$/parallel_ueventd_main_loop disabled/' "$V/etc/ueventd.rc"

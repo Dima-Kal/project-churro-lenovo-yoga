@@ -30,4 +30,15 @@ rm -f "$T"/bin/{flashrom,futility,vpd,fwtool,elogtool} \
       "$T"/bin/{fwupd-binder,fwupd_blocking_update,fwupdmgr} "$T"/etc/init/fwupd.rc
 rm -rf "$T"/usr/share/fwupd "$T"/etc/fwupd
 [ ! -e "$T"/bin/vpd ] || { echo "vpd still present" >&2; exit 1; }   # the executor must stay toothless
+
+# Board tuning written to whatever CPU this is: init.ruby.rc sets the Lenovo laptop's RAPL power
+# limits (PL1 18 W / PL2 35 W / PL4 150 W) and a TCC thermal offset at every boot. Seen applied
+# on an Arrow Lake HX (55 W class: heavily throttled); on a low-power PC it could raise limits
+# past its design. The PC's firmware limits stay in charge. All boards' rc files, in place
+# (rewriting keeps the SELinux xattr; `sed -i` would drop it).
+for rc in "$T"/etc/init/*.rc; do
+  grep -qE '^\s*write /sys/.*(intel-rapl|tcc_offset)' "$rc" || continue
+  c=$(sed -E '/^\s*write \/sys\/.*(intel-rapl|tcc_offset)/d' "$rc"); printf '%s\n' "$c" > "$rc"
+  echo "   vendor: $(basename "$rc"): board CPU power limits / thermal offset removed"
+done
 echo "   vendor: firmware updaters removed (flashrom, futility, vpd, fwtool, elogtool, fwupd); crossystem = no-op stub"

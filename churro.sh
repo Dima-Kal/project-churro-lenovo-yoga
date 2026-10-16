@@ -174,7 +174,10 @@ EOF
   # - TPM drivers blacklisted: the image's gscutil/check_tpm_clear send Google-security-chip
   #   commands to /dev/tpm0 at every boot. On a PC that is the TPM Windows/BitLocker depends on.
   #   Churro uses software security, nothing here needs the TPM;
-  # - NPU driver blocked unless CHURRO_NPU=true (see top).
+  # - NPU driver blocked unless CHURRO_NPU=true (see top);
+  # - no crash dumps into UEFI NVRAM: the GKI kernel registers efi_pstore, which writes the kernel
+  #   log into EFI variables on every panic (and the debug entries turn init crashes into panics).
+  #   Filling a PC's NVRAM can make its firmware unbootable.
   # module_blacklist is a single kernel parameter (the last one wins), so extend the vendor's.
   local vcmd blk=spi_intel,spi_intel_pci,tpm,tpm_tis,tpm_tis_core,tpm_crb,tpm_tis_spi,tpm_tis_i2c_cr50
   [ "$CHURRO_NPU" = true ] || blk="$blk,intel_vpu"
@@ -183,7 +186,8 @@ EOF
     *module_blacklist=*) vcmd=$(printf '%s' "$vcmd" | sed -E "s/module_blacklist=([^ ]*)/module_blacklist=\1,$blk/") ;;
     *) vcmd="$vcmd module_blacklist=$blk" ;;
   esac
-  log "kernel cmdline: flash read-only, no TPM, blacklisted: $blk"
+  vcmd="$vcmd efi_pstore.pstore_disable=1"
+  log "kernel cmdline: flash read-only, no TPM, no UEFI crash dumps, blacklisted: $blk"
 
   log "populating EFI-SYSTEM"
   esp_build "$(part EFI-SYSTEM)" "$W" "$vcmd" "$bsrc"
