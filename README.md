@@ -54,8 +54,11 @@ Install to a disk from any Linux live session: `sudo ./churro.sh install churro.
    extra drivers: i915 (older Intel), simpledrm (any UEFI framebuffer), AHCI, virtio, vgem, and a
    distro-like module set (Arch Linux's driver modules, ~3000) that `features/drivers-extra`
    adds to vendor_dlkm after an ABI check; Android loads them by device ID, like udev.
-   `features/firmware-extra` adds their firmware (linux-firmware, Intel SOF audio, regulatory.db).
-   Updating them: checklist in docs/03, "Updating the driver set and firmware".
+   `features/firmware-extra` adds their firmware (linux-firmware, Intel SOF audio, regulatory.db);
+   `features/audio-generic` points Google's audio HAL at the PC's HD-audio card instead of the
+   Lenovo board's.
+   Updating them: checklist in docs/03, "Updating the driver set and firmware"; for a newer
+   recovery image or another Googlebook's image: docs/03, "Moving to a newer recovery image".
 3. **Security** (`features/security-software`): the Googlebook keystore runs in a Trusty VM that
    needs x86 pKVM + pvmfw DICE + the Google Security Chip. Churro swaps in AOSP's software KeyMint
    (taken from Google's public Android 17 emulator image) and removes the Trusty/GSC HALs — the

@@ -1,0 +1,31 @@
+#!/vendor/bin/sh
+# Project Churro audio-generic: find the PC's built-in sound card and tell init which generic HAL
+# config (/vendor/etc/audio/<ALSA card id>) fits it. init then bind-mounts that config over the
+# Googlebook board config, renames the card to the ID the HAL waits for and restarts the HAL
+# (churro-audio.rc).
+# Installed under the name Google's policy already gives a domain for this job (get_variant_audio:
+# reads sysfs, sets vendor.audio.* properties).
+
+# true if card $1 carries an HD-audio codec that isn't HDMI/DP (skips GPU audio cards that share
+# an ID with the analog one, e.g. AMD's "Generic" vs "Generic_1")
+analog() {
+  for f in /sys/class/sound/card$1/device/hdaudioC$1D*/chip_name; do
+    [ -f "$f" ] && ! grep -qiE 'hdmi|dp' "$f" && return 0
+  done
+  return 1
+}
+
+i=0
+while [ $i -lt 150 ]; do   # cards appear while modules/firmware load: retry for 15 s
+  for d in /sys/class/sound/card[0-9]*; do
+    [ -f "$d/id" ] || continue
+    n=${d##*card}; id=$(cat "$d/id")
+    grep -q 'Project Churro' "/vendor/etc/audio/$id/audio_config.xml" 2>/dev/null || continue
+    case $id in sof*) ;; *) analog "$n" || continue ;; esac
+    setprop vendor.audio.churro.card "$id"    # init: bind-mount config, restart the HAL
+    setprop vendor.audio.churro.index "$n"    # init: rename the card to the ID the HAL wants
+    exit 0
+  done
+  sleep 0.1; i=$((i+1))
+done
+exit 1   # no known card: the HAL keeps the board config (USB/Bluetooth audio still work)

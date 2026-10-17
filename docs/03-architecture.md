@@ -146,7 +146,41 @@ files get a sibling's label or an explicit one.
   `CHURRO_SUPER`/`CHURRO_HERE`/`EROFS_BIN` so they can read other LP partitions. Names
   linux-firmware only creates when installed (WHENCE `Link:`) are resolved and become hardlinks to
   one copy; `skip.txt` lists globs never installed (NVIDIA GSP 535). vendor_dlkm is repacked
-  before vendor, so modules drivers-extra adds get their firmware too.
+  before vendor, so modules drivers-extra adds get their firmware too. sof-bin is merged file by
+  file without overwriting: the image already ships some of its dirs (`intel/sof-ipc4/ptl`), and
+  skipping existing dirs whole had left out every other platform (Arrow Lake's `arl-s` too).
+* `audio-generic` (default) — built-in audio on PCs. Google's audio HAL (`dras`, in the APEX
+  `com.android.hardware.audio.desktop`) takes its card ID and config dir from Google's hardware
+  mapping table (`/vendor/etc/hardware_descriptor/mapping_table.binpb`, key `audio-config-dir`),
+  whose default is Lenovo's board: dir `/vendor/etc/audio/sof-rt5682_alc5682ivs_tas2563`, card
+  `hw:sofrt5682`. No PC has that card: after 10 s the HAL starts a stub ("Primary module audio will
+  not work"; USB/Bluetooth audio still work). `vendor.audio.soundcard.name` does not change that
+  (tried). The feature adds generic configs per ALSA card ID in `/vendor/etc/audio/<id>` (`PCH`,
+  `Intel`, `Generic`, `Generic_1`: legacy HD audio; `sofhdadsp`: SOF's generic HDA machine):
+  speaker on PCM 0 (the kernel's HDA auto-mute moves it to headphones), internal mic, HDMI where
+  on the same card, all addressed as the board's card ID; same fields as Google's file
+  (`DSPLatency`, mic channel map/sensitivity: without them the HAL fails "to create internal
+  card") plus Google's neutral `dsp.ini` and volume curves. Verified in QEMU (intel-hda: card
+  created, PCM playback reaches QEMU's audio backend). At boot `/vendor/bin/get_variant_audio`
+  (a name Google's policy already gives a domain that reads sysfs and sets `vendor.audio.*`; Google
+  ships no such script) waits up to 15 s for a card with a config (non-HDMI codec, so AMD's
+  HDMI-only "Generic" card is skipped) and sets `vendor.audio.churro.card` + `.index`;
+  `churro-audio.rc` (one literal trigger per card ID / index: init expands `${...}` in vendor rc
+  files as `vendor_init`, which can't read these properties) bind-mounts the config over the board
+  dir, renames the card to the board's ID (`write /sys/class/sound/cardN/id sofrt5682`, ALSA
+  allows renaming) and restarts the HAL. Unknown cards (SoundWire laptops, machine-specific SOF
+  cards) keep Google's config: add a `mk` line in `patch-vendor.sh`.
+  Related, in `churro.sh` (always): the vendor cmdline's audio settings are stripped
+  (`snd_intel_dspcfg.dsp_driver=3` forced SOF on every Intel HD-audio controller, so
+  `snd_hda_intel` never bound; plus `snd_sof_pci.ipc_type=1`, the board's
+  `snd_intel_sdw_acpi.sdw_link_mask`, `sof_use_tplg_nhlt=1`): the kernel then picks SOF or
+  legacy HDA per machine, like a distro. And `patch-vendor_dlkm.sh` removes two board lines from
+  the module config: `blocklist snd_hda_intel` (`modules.blocklist`) and
+  `options snd_sof_intel_hda_generic hda_model=alc-2024y-chromebook dmic_num=4` (`modules.options`:
+  Lenovo's codec pin quirk and DMIC count, wrong on any other machine), and softdeps every
+  `snd-hda-codec-*` driver before `snd_hda_intel` / `snd_sof_intel_hda(_generic)`: the controller
+  binds a driver to each codec right after finding it and gives up without one ("Cannot probe
+  codecs"); Linux autoloads them via `request_module`, Android can't (Google softdeps its one codec).
 * `gfx-minigbm` (default) — the graphics buffer allocator libraries (`libminigbm_gralloc.so`,
   `libgbm.so`) rebuilt from AOSP `external/minigbm` (android17-release, the source of Google's
   own build) by `gfx/build-minigbm.sh` with the NDK, plus `gfx/minigbm-patches/`. Google's build
@@ -246,6 +280,75 @@ Rules that must hold whatever is changed: built-in kernel options stay identical
 harmless additions; the kABI check passes with 0 differences; safety exclusions stay in
 `DISTRO_DENY`/`DISTRO_DIRS` (TPM, SPI flash/MTD, watchdogs, EFI/firmware drivers, NPU — see the
 safety section of `docs/05`).
+
+## Moving to a newer recovery image or another Googlebook's image (checklist)
+
+Most of the build reads what it needs from the input image (partition tables, the kernel's build
+ID and CRCs, the shipped modules, the board audio config, the SELinux policy version) and stops
+with an error when something doesn't fit. What follows is everything that is *tied to the current
+image* (Lenovo "ruby", build 16452207, Android 17, GKI 6.18) and may need attention. Work through
+it in order; each step says where the assumption lives and how to check it.
+
+1. **Build once and read the log** (`churro.sh auto`). Hard failures name their cause:
+   kernel patch doesn't apply → "When the kernel source changes" (§2); kABI differences → the
+   driver-set checklist above; `minigbm`/`libgbm` "symbol missing" → `gfx/build-minigbm.sh`
+   (AOSP branch must match the image's Android release); `audio-generic: no board audio config`.
+2. **Android release pins** (only change with a new Android version, not a new build):
+   - software KeyMint: `CHURRO_EMU_URL`/`CHURRO_EMU_SHA1` at the top of
+     `features/security-software/patch-vendor.sh` = Google's public x86_64 emulator system image
+     of the **same Android release** (sys-img `google_apis/x86_64-<API>.0_rNN.zip`). A mismatch
+     shows as keystore2/KeyMint errors at boot (`Failed to construct mandatory security level TEE`,
+     docs/02). Update URL + SHA1 together.
+   - minigbm (`android17-release`) and Mesa/NDK pins in `gfx/build-*.sh`.
+3. **Edits matched by file name — these skip silently if names change. Check them by hand:**
+   - *Safety* (`features/firmware-lockdown/patch-vendor.sh`, docs/05 safety table): the list of
+     removed flash/firmware tools (`flashrom futility vpd fwtool elogtool fwupd`, the futility
+     executor HAL). On a new image list `vendor/bin`, `vendor/bin/hw`, `vendor/etc/init` and
+     `system*/bin` for anything that writes SPI flash, EC, VPD or firmware (names containing
+     flash, fw, futility, vpd, ec, gsc, tpm) and add it. The cmdline part (SPI driver + TPM
+     blacklist, `spi-intel.*` flags stripped, `efi_pstore` off, in `churro.sh`) does not depend on
+     names, but re-read the new vendor cmdline (`<work>/vboot/cmdline`) for new firmware-write or
+     TPM options.
+   - *Board power limits*: the same script edits `init.ruby.rc` (RAPL/TCC). Another device has
+     `init.<board>.rc`: grep its rc files for `powercap`, `intel-rapl`, `tcc_offset`.
+   - *Security HALs* (`features/security-software/patch-vendor.sh` loop, `patch-system_ext.sh`):
+     Trusty/GSC HAL names. Leftovers show at boot as services crash-looping or keystore2 waiting
+     for a HAL.
+   - *Board audio settings*: the four cmdline options stripped in `churro.sh` and the
+     `modules.blocklist` / `modules.options` lines `audio-generic` removes. Re-read both files and
+     the cmdline of the new image for other `snd_*` options that force a driver or a board quirk.
+4. **audio-generic assumptions** (behaviour of Google's audio HAL `dras`, found by testing this
+   build; the build log line `audio-generic: configs for … over <board dir>` shows what it found):
+   - the HAL takes card + config dir from `/vendor/etc/hardware_descriptor/mapping_table.binpb`
+     (default entry on an unknown PC). We assume that default = the one board dir in
+     `/vendor/etc/audio` and take the card name from its `audio_config.xml`. **Several board dirs**
+     in a new image: find out which one the HAL picks on a PC (logcat `Startup options:
+     … primary_soundcard_name …, audio_config_dir …`) and use that dir's card name (`W=` in
+     `patch-vendor.sh`).
+   - names hardcoded from this image: the restarted service `vendor.audio-hal-aidl` (apex rc
+     `dras.core.audio.rc`); the borrowed SELinux domain `get_variant_audio` and its exec label for
+     `/vendor/bin/get_variant_audio` (`vendor_file_contexts`; **if the type is gone the extra CIL
+     rule makes the on-device policy compile fail = no boot**: check `grep get_variant_audio
+     vendor/etc/selinux/*` first); SOF module names in the softdep lines (`snd_sof_intel_hda`,
+     `snd_sof_intel_hda_generic`: check `ls vendor_dlkm/lib/modules | grep sof-intel-hda`).
+   - config format: the fields Google's own `audio_config.xml` uses. If the HAL logs `fail to
+     create internal card`, diff our generated file against the new image's board file and copy
+     any new fields.
+   - success looks like `Successfully initialized AlsaCardManager with internal card` in logcat;
+     failure like `Starting primary stub module. Primary module audio will not work`.
+5. **Graphics edits by pattern** (`features/gfx-mesa/patch-vendor.sh`): build.prop keys
+   (`ro.hardware.egl/vulkan`, `vendor.hwc.drm.enable_color_pipeline`), `ueventd.rc`
+   (`parallel_ueventd_main_loop`), DRM node labels in `vendor_file_contexts`. Grep the new files
+   for the same keys; a renamed key just means the edit no longer happens.
+6. **Test in QEMU before hardware.** `tools/qemu-test.sh <img> <logdir>` on a copy of the image
+   whose ESP `churro/env.cfg` has `set default=1` (debug entry, so logs get written); `QEMU_EXTRA`
+   adds devices. Audio check:
+   `QEMU_EXTRA='-audiodev wav,id=a0,path=/tmp/q.wav -device intel-hda -device hda-duplex,audiodev=a0'`
+   → the card is legacy HDA id `Intel`; expect `snd_hda_codec_generic … autoconfig`, the logcat
+   success line above, and `/tmp/q.wav` growing past its 44-byte header once Android opens a
+   stream. SurfaceFlinger crash loops in QEMU are a known softpipe issue, not a regression.
+   Logs: CHURRO-LOG partition (`boot.log`, `logcat.log`).
+7. **Then hardware**, always first with the debug GRUB entry (only it writes the logs).
 
 ## Why this is simpler than Croissant in some places and harder in others
 * Simpler: no donor *system* image, no root-fs surgery for drivers on Intel Gen12+; Android's

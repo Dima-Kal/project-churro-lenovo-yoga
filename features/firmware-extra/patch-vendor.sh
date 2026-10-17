@@ -75,9 +75,11 @@ SOF=${CHURRO_SOF:-2026.09.2}; S=${CHURRO_CACHE:-/var/cache/churro}/sof
 mkdir -p "$S"; [ -s "$S/sof-bin-$SOF.tar.gz" ] || { curl -fsSL --retry 3 -o "$S/t.tmp" \
   "https://github.com/thesofproject/sof-bin/releases/download/v$SOF/sof-bin-$SOF.tar.gz"; mv "$S/t.tmp" "$S/sof-bin-$SOF.tar.gz"; }
 tar xzf "$S/sof-bin-$SOF.tar.gz" -C "$M"
-for d in "$M/sof-bin-$SOF"/sof*; do
-  [ -e "$FW/intel/${d##*/}" ] && continue
-  mkdir -p "$FW/intel"; cp -a --no-preserve=ownership "$d" "$FW/intel/"; find "$FW/intel/${d##*/}" >> "$M/added"
+mkdir -p "$FW/intel"
+for d in "$M/sof-bin-$SOF"/sof*; do   # merge per file, never overwrite: the image already ships sof-ipc4/ptl etc.
+  (cd "$M/sof-bin-$SOF" && find "${d##*/}") | while read -r r; do
+    [ -e "$FW/intel/$r" ] || [ -L "$FW/intel/$r" ] || echo "$FW/intel/$r"; done >> "$M/added"
+  tar cf - -C "$M/sof-bin-$SOF" "${d##*/}" | tar xf - -C "$FW/intel" --skip-old-files --no-same-owner
 done
 RDB=${CHURRO_REGDB:-master-2026-09-03}
 for f in regulatory.db regulatory.db.p7s; do
@@ -92,4 +94,4 @@ lbl=$(getfattr --absolute-names --only-values -n security.selinux "$FW")
 find "$FW" | while read -r x; do   # -h: symlinks (sof-bin) get their own label
   getfattr -h --absolute-names --only-values -n security.selinux "$x" >/dev/null 2>&1 || setfattr -h -n security.selinux -v "$lbl" "$x"
 done
-echo "   vendor: +$(wc -l < "$M/added") firmware files ($( (xargs -r du -cm < "$M/added" | tail -1 | cut -f1) || echo 0) MiB) from linux-firmware $TAG, sof-bin $SOF, wireless-regdb $RDB"
+echo "   vendor: +$(wc -l < "$M/added") firmware files ($(tr '\n' '\0' < "$M/added" | du -cm --files0-from=- | tail -1 | cut -f1) MiB) from linux-firmware $TAG, sof-bin $SOF, wireless-regdb $RDB"

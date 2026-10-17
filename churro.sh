@@ -184,6 +184,10 @@ EOF
   local vcmd blk=spi_intel,spi_intel_pci,tpm,tpm_tis,tpm_tis_core,tpm_crb,tpm_tis_spi,tpm_tis_i2c_cr50
   [ "$CHURRO_NPU" = true ] || blk="$blk,intel_vpu"
   vcmd=$(sed -E 's/ ?spi-intel\.(writeable|ignore_protection_status)=[^ ]*//g' "$W/vboot/cmdline")
+  # Audio: the board forces SOF on every Intel HD-audio controller (dsp_driver=3), IPC4 and its
+  # SoundWire links / topology NHLT. Generic: kernel defaults, i.e. auto-detect like distros
+  # (SOF where DMICs/SoundWire need it, else snd_hda_intel; IPC version per platform).
+  vcmd=$(printf '%s' "$vcmd" | sed -E 's/ ?(snd_intel_dspcfg\.dsp_driver|snd_sof_pci\.ipc_type|snd_intel_sdw_acpi\.sdw_link_mask|snd_sof_intel_hda_common\.sof_use_tplg_nhlt)=[^ ]*//g')
   case $vcmd in
     *module_blacklist=*) vcmd=$(printf '%s' "$vcmd" | sed -E "s/module_blacklist=([^ ]*)/module_blacklist=\1,$blk/") ;;
     *) vcmd="$vcmd module_blacklist=$blk" ;;
@@ -240,7 +244,7 @@ cmd_auto() {
   local margs=() p; for p in ${packs//,/ }; do
     [ -d "$CHURRO_PACK_DIR/$p" ] || die "no module pack '$p' in $CHURRO_PACK_DIR"; margs+=(--modules "$CHURRO_PACK_DIR/$p"); done
   [ "$gfx" = auto ] || CHURRO_EXTRA_ARGS="androidboot.churro.gfx=$gfx ${CHURRO_EXTRA_ARGS:-}"
-  cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,gfx-minigbm,gpu-nouveau,drivers-extra,debug-log$xfeat" "${margs[@]}"
+  cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,gfx-minigbm,gpu-nouveau,drivers-extra,audio-generic,debug-log$xfeat" "${margs[@]}"
 }
 
 case ${1:-} in auto|build|install) deps_ensure ;; esac
