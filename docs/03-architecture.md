@@ -157,8 +157,16 @@ files get a sibling's label or an explicit one.
   not work"; USB/Bluetooth audio still work). `vendor.audio.soundcard.name` does not change that
   (tried). The feature adds generic configs per ALSA card ID in `/vendor/etc/audio/<id>` (`PCH`,
   `Intel`, `Generic`, `Generic_1`: legacy HD audio; `sofhdadsp`: SOF's generic HDA machine):
-  speaker on PCM 0 (the kernel's HDA auto-mute moves it to headphones), internal mic, HDMI where
-  on the same card, all addressed as the board's card ID; same fields as Google's file
+  speaker and headphones on PCM 0 (the kernel's HDA auto-mute switches the outputs; the
+  Headphone/Mic nodes name the jacks' input devices, `<card name> Headphone`/`Mic`, so Android
+  sees plugging), internal mic; HDMI nodes only in a `<id>_hdmi` variant, chosen when the card has
+  `pcmC<n>D3p` (on hybrid laptops HDMI audio is on the dGPU's card; an HDMI node pointing at a
+  missing PCM made Android route to nothing). `/vendor/bin/churro-mixer` (static C, ~50 lines)
+  unmutes the card before the HAL starts, like `alsactl init`: the kernel creates HD-audio's
+  `Master` muted at volume 0 and leaves that to userspace; every `Playback Switch`/`Capture
+  Switch` on, `Master Playback Volume` to its own maximum (fixed values in `mixer_paths.xml` don't
+  work: libaudioroute wants one value per channel, and channels/ranges differ per codec). All
+  addressed as the board's card ID; same fields as Google's file
   (`DSPLatency`, mic channel map/sensitivity: without them the HAL fails "to create internal
   card") plus Google's neutral `dsp.ini` and volume curves. Verified in QEMU (intel-hda: card
   created, PCM playback reaches QEMU's audio backend). At boot `/vendor/bin/get_variant_audio`
@@ -335,7 +343,12 @@ it in order; each step says where the assumption lives and how to check it.
      create internal card`, diff our generated file against the new image's board file and copy
      any new fields.
    - success looks like `Successfully initialized AlsaCardManager with internal card` in logcat;
-     failure like `Starting primary stub module. Primary module audio will not work`.
+     failure like `Starting primary stub module. Primary module audio will not work`. Streams
+     reaching the right PCM (`resolve_config for direction:OUT pcm:(N, 0)`) but no sound = mixer:
+     check `churro-mixer` ran (no avc denials for `get_variant_audio`/`audio_device`).
+   - QEMU proves routing, not volume: its single-output codec has no virtual Master, so a muted
+     Master on real hardware doesn't show there. Check the captured wav for non-zero samples
+     (`od -An -td2 -j44 q.wav`), with a known tone played by `dras_tool aplay <wav>`.
 5. **Graphics edits by pattern** (`features/gfx-mesa/patch-vendor.sh`): build.prop keys
    (`ro.hardware.egl/vulkan`, `vendor.hwc.drm.enable_color_pipeline`), `ueventd.rc`
    (`parallel_ueventd_main_loop`), DRM node labels in `vendor_file_contexts`. Grep the new files

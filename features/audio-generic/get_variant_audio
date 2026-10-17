@@ -22,6 +22,10 @@ while [ $i -lt 150 ]; do   # cards appear while modules/firmware load: retry for
     n=${d##*card}; id=$(cat "$d/id")
     grep -q 'Project Churro' "/vendor/etc/audio/$id/audio_config.xml" 2>/dev/null || continue
     case $id in sof*) ;; *) analog "$n" || continue ;; esac
+    # HDMI entries only if this card really has HDMI PCMs (first one is 3 on PCH and SOF HDA);
+    # hybrid laptops wire HDMI to the dGPU's own card
+    [ -e "/sys/class/sound/pcmC${n}D3p" ] && [ -f "/vendor/etc/audio/${id}_hdmi/audio_config.xml" ] && id=${id}_hdmi
+    /vendor/bin/churro-mixer "$n"   # the kernel leaves HDA's Master muted at volume 0
     setprop vendor.audio.churro.card "$id"    # init: bind-mount config, restart the HAL
     setprop vendor.audio.churro.index "$n"    # init: rename the card to the ID the HAL wants
     exit 0
