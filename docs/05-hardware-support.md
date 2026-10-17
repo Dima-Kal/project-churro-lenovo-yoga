@@ -40,8 +40,8 @@ Intel) → `init trap invalid opcode` → panic; Asus T300FA (Broadwell) can't b
 |---|---|---|
 | Intel iGPU / Arc (Gen12+) | image's own `xe` + `firmware-extra` (GuC/HuC/GSC/DMC from linux-firmware); default graphics = Google's stack (ANGLE on ANV); hwcomposer color pipeline off; allocator rebuilt (`gfx-minigbm`): any Xe GPU, by graphics IP version | — (Arrow Lake verified on the MSI) |
 | Intel pre-Gen12 | opt-in `i915` pack (not default: it wedged Arrow Lake and broke `xe`) | only relevant with CPU emulation |
-| AMD | — | amdgpu module + firmware + Mesa radeonsi/radv + allocator |
-| NVIDIA | `gpu-nouveau` (below): nouveau display + GSP firmware + allocator with VRAM buffers; GL = Zink on NVK (Turing+) or nouveau GL (older), Vulkan = NVK; only where nothing else drives the display | MSI discrete mode (RTX 5070 Ti, GB205): Android boots and renders on NVK/Zink; panel garbled by DSC the GOP left on, HDMI stalls → fix (`nouveau-dsc-off` + GB20x backports) to test |
+| AMD | amdgpu module + firmware (distro module set); no userspace yet | Mesa radeonsi/radv + allocator backend + GRUB detection |
+| NVIDIA | `gpu-nouveau` (below): nouveau display + GSP firmware + allocator with VRAM buffers; GL = Zink on NVK (Turing+) or nouveau GL (older), Vulkan = NVK; only where nothing else drives the display | MSI discrete mode (RTX 5070 Ti, GB205) works: panel + HDMI, Chrome (NVK AHB patch); hybrid machines: NVIDIA unused (HDMI wired to it stays dark) → reverse PRIME / render offload |
 | No usable GPU | no UI: no allocator backend for simpledrm/vgem, and Mesa's software path needs llvmpipe (LLVM) to import buffers | fallback allocator backend + llvmpipe |
 | VMs (QEMU) | virtio-gpu, vgem in the `gpu` pack | — |
 
@@ -55,8 +55,10 @@ an Intel iGPU at 00:02.0 (hybrid laptops included) → `native`; else an NVIDIA 
 |---|---|---|
 | Storage | NVMe/USB built in; `storage` pack: AHCI, eMMC (sdhci-pci/acpi) | — |
 | Intel Wi-Fi / BT | image's iwlwifi/btintel + `firmware-extra` (modinfo-declared names + `extra.txt` for Bluetooth) | verify on MSI (`iwlwifi-so-a0-gf-a0-89`, `ibt-1040-0041`) |
-| Other Wi-Fi | opt-in `wifi` pack (ath9k, firmware-less; replaces the image's iwl7000 cfg80211/mac80211) | boot-time choice instead of build-time |
-| Audio | HDA from the image; SOF DSP firmware/topologies missing | sof-bin package |
+| Other Wi-Fi / BT | distro module set: ath9k/10k/11k/12k, rtw88/89, rtl8xxxu, mt76, brcm, … + their firmware + regulatory.db; they link against the image's cfg80211/mac80211 (CRCs match ours, so the ABI check accepts them) | verify on hardware; the opt-in `wifi` pack is probably obsolete |
+| Ethernet, USB devices, card readers, touchpads/touchscreens, sensors, HID | distro module set (`drivers-extra`, ~3000 modules, loaded by device alias) | test on more machines |
+| Audio | HDA + SOF from the image + distro codec/amp drivers; SOF firmware/topologies (sof-bin), amp tunings via WHENCE | verify on MSI; generic audio HAL config if Google's doesn't route sound |
+| Modules left out | ~50 the ABI check rejects: some need exports Google's GKI modules trim (usbnet, usb-serial, ptp, nfc, rfkill helpers) or Google built a dependency differently (a few HDA/SoundWire codecs) | ship our builds of those GKI modules too |
 | NPU (`intel_vpu`) | blacklisted (`CHURRO_NPU=false`): froze Arrow Lake | with `firmware-extra` the NPU firmware may now be there → retry with `CHURRO_NPU=true` |
 | BIOS flash | always inaccessible (`firmware-lockdown` + cmdline + SPI driver blacklist) | — |
 | Device firmware (SSD, hubs, cameras…) | `fwupd` removed (`firmware-lockdown`) | — |
@@ -70,9 +72,9 @@ an Intel iGPU at 00:02.0 (hybrid laptops included) → `native`; else an NVIDIA 
 | QEMU/KVM | host / virtio | boots to system_server; SurfaceFlinger crashes in softpipe (QEMU 2D virtio-gpu) |
 | Asus T300FA | Core M-5Y10 / HD 5300 | not bootable (CPU floor) |
 | HP AiO | older Intel | `init` invalid opcode (CPU floor) |
-| MSI (Core Ultra 7 255HX) | Arrow Lake / RTX 50 (10de:2f18) | hybrid mode: boots and runs (xe + our allocator); discrete (MUX) mode: Android runs on nouveau/NVK, display fixes to test |
+| MSI (Core Ultra 7 255HX) | Arrow Lake / RTX 50 (10de:2f18) | hybrid mode: boots and runs (xe + our allocator); discrete (MUX) mode: works on nouveau/NVK (panel, HDMI, Chrome); distro driver set: audio/touchpad to test |
 
-## Design direction: distro-style driver coverage (planned)
+## Design direction: distro-style driver coverage (steps 1-2 done: distro module set + firmware)
 
 The image is already generic: "build time" only means files are baked in, nothing is probed on
 the build machine. `firmware-extra` takes its list from *every* module in the image, so one image
@@ -104,8 +106,12 @@ Where Android is harder than a Linux distro:
    blocking via `module_blacklist` (already used), later exposed as a GRUB entry or setting.
 
 Order:
-1. Broaden `kmod/profiles/generic.conf` into a distro-like driver set (as modules, loaded on demand).
-2. Extend `firmware-extra` to cover them (already automatic: it reads every module's firmware list).
+1. Done: `kmod/profiles/generic.conf` takes Arch Linux's module set from driver directories
+   (docs/03), `drivers-extra` installs it with an ABI check against the image's modules.
+2. Done: `firmware-extra` covers them (modinfo names + every WHENCE file of a shipped driver +
+   sof-bin + wireless-regdb). Finding on the way: the image's cfg80211/mac80211 have the same CRCs
+   as our build, so in-tree Wi-Fi drivers link against them (the Wi-Fi half of "conflicting stacks" above may
+   not apply; to confirm on hardware).
 3. Boot-time stack picker (Wi-Fi, then graphics; replaces build-time `--packs wifi` / `--gfx`).
 4. Generic graphics allocator + Mesa CPU rendering, then AMD (amdgpu + radeonsi/radv) and
    NVIDIA (nouveau + NVK/Zink) on top.

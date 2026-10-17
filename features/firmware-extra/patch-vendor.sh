@@ -2,15 +2,20 @@
 # Firmware the image's own drivers ask for but the Googlebook image doesn't ship (it only carries
 # what its target needs, e.g. Panther Lake GPU firmware, its own Wi-Fi). Data-driven: the
 # firmware names every vendor_dlkm/system_dlkm module declares (modinfo -F firmware) + extra.txt
-# (names drivers build at runtime, e.g. Intel Bluetooth), minus skip.txt, fetched from a pinned
-# linux-firmware tag into /vendor/firmware. Names linux-firmware only creates when installed
+# (names drivers build at runtime, e.g. Intel Bluetooth) + every file WHENCE lists for a shipped
+# driver, minus skip.txt, fetched from a pinned linux-firmware tag into /vendor/firmware; plus
+# Intel's audio DSP firmware (sof-bin) and the Wi-Fi regulatory database, which live elsewhere. Names linux-firmware only creates when installed
 # (WHENCE "Link:", e.g. a dozen NVIDIA chips sharing one 60 MB GSP image) become hardlinks to a
-# single copy. Downloads are cached; names upstream doesn't have are remembered.
+# single copy. The release tarball is downloaded and unpacked once (cache).
 set -euo pipefail
 T=$1; FW=$T/firmware; F=$(dirname "$0")
 TAG=${CHURRO_LINUX_FIRMWARE:-20260916}
-C=${CHURRO_CACHE:-/var/cache/churro}/linux-firmware-$TAG; mkdir -p "$C"; touch "$C/.missing"
-URL="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
+C=${CHURRO_CACHE:-/var/cache/churro}/linux-firmware-$TAG; mkdir -p "$C"
+# the release tarball, unpacked once (thousands of files: one download beats one request each)
+if [ ! -f "$C/.unpacked" ]; then
+  curl -fL --retry 3 -o "$C/lf.tar.xz" "https://cdn.kernel.org/pub/linux/kernel/firmware/linux-firmware-$TAG.tar.xz"
+  tar xJf "$C/lf.tar.xz" -C "$C" --strip-components=1; rm -f "$C/lf.tar.xz"; touch "$C/.unpacked"
+fi
 
 # The modules live on vendor_dlkm/system_dlkm (other LP partitions of the same super).
 M=$(mktemp -d); trap 'rm -rf "$M"' EXIT
@@ -22,7 +27,6 @@ for p in vendor_dlkm_a system_dlkm_a; do
 done
 
 # WHENCE links: "Link: nvidia/gb203 -> gb202" (a dir), "Link: x/a.bin -> ../y/a.bin" (a file)
-[ -s "$C/WHENCE" ] || { curl -fsS --retry 3 -o "$C/WHENCE.tmp" "$URL/WHENCE?h=$TAG"; mv "$C/WHENCE.tmp" "$C/WHENCE"; }
 declare -A LNK FIRST
 while read -r a b; do LNK[$a]=$(realpath -m -s --relative-to=/ "/$(dirname "$a")/$b"); done \
   < <(sed -n 's/^Link: *\([^ ]*\) *-> *\([^ ]*\).*$/\1 \2/p' "$C/WHENCE")
@@ -40,32 +44,52 @@ resolve() {
 mapfile -t SKIP < <(grep -vE '^\s*(#|$)' "$F/skip.txt")
 skip() { local s; for s in "${SKIP[@]}"; do case $1 in $s) return 0 ;; esac; done; return 1; }
 
+# Names drivers build at runtime (board files, per-laptop amplifier tunings, ...) aren't in
+# modinfo, but WHENCE lists every file under the driver that uses it: take all files of every
+# WHENCE "Driver:" section that matches a shipped module (same name, or the module name starts
+# with "<driver>_" / ends with "_<driver>", e.g. ath11k_pci, snd_hda_scodec_cs35l41).
+find "$M" -name '*.ko' -printf '%f\n' | sed 's/\.ko$//' | tr - _ | sort -u > "$M/mods"
+awk 'NR==FNR {m[$1]=1; next}
+  /^Driver:/ { d=$2; gsub("-", "_", d); ok=(d in m); if (!ok) for (k in m) if (index(k, d "_")==1 || (length(k)>length(d) && substr(k, length(k)-length(d))=="_" d)) { ok=1; break } next }
+  /^-+$/ { ok=0 }
+  ok && /^(File|RawFile|Link):/ { print $2 }' "$M/mods" "$C/WHENCE" > "$M/whence-files"
+
 { find "$M" -name '*.ko' -exec modinfo -F firmware {} + 2>/dev/null
+  cat "$M/whence-files"
   grep -vE '^\s*(#|$)' "$F/extra.txt"; } | sort -u | while read -r f; do
   case $f in *'*'*|/*|*..*) continue ;; esac          # globs / odd paths: skip
   [ -e "$FW/$f" ] && continue                         # the image already has it
   skip "$f" && continue
   r=$(resolve "$f"); skip "$r" && continue
-  grep -qxF "$r" "$C/.missing" && continue
-  if [ ! -s "$C/$r" ]; then
-    mkdir -p "$(dirname "$C/$r")"
-    # linux-firmware moved some files into vendor dirs (iwlwifi-* -> intel/iwlwifi/); drivers
-    # still ask for the old name, which is where it's installed.
-    ok=0
-    for u in "$r" "intel/iwlwifi/$r"; do
-      curl -fsS --retry 3 -o "$C/$r.tmp" "$URL/$u?h=$TAG" 2>/dev/null && { ok=1; break; }
-    done
-    if [ $ok = 0 ]; then rm -f "$C/$r.tmp"; echo "$r" >> "$C/.missing"; continue; fi
-    mv "$C/$r.tmp" "$C/$r"
-  fi
+  # linux-firmware moved some files into vendor dirs (iwlwifi-* -> intel/iwlwifi/); drivers still
+  # ask for the old name, which is where it's installed. Not in the release: skipped.
+  s=$C/$r; [ -f "$s" ] || s=$C/intel/iwlwifi/$r; [ -f "$s" ] || continue
   if [ -n "${FIRST[$r]:-}" ]; then mkdir -p "$(dirname "$FW/$f")"; ln "${FIRST[$r]}" "$FW/$f"
-  else install -D -m 0644 -o root -g root "$C/$r" "$FW/$f"; FIRST[$r]=$FW/$f; fi
+  else install -D -m 0644 -o root -g root "$s" "$FW/$f"; FIRST[$r]=$FW/$f; fi
   echo "$FW/$f"
 done > "$M/added"
 
+# Firmware outside linux-firmware: Intel audio DSP firmware + topologies (SOF, sof-bin release;
+# the driver picks files by platform and codec at runtime) and the Wi-Fi regulatory database.
+SOF=${CHURRO_SOF:-2026.09.2}; S=${CHURRO_CACHE:-/var/cache/churro}/sof
+mkdir -p "$S"; [ -s "$S/sof-bin-$SOF.tar.gz" ] || { curl -fsSL --retry 3 -o "$S/t.tmp" \
+  "https://github.com/thesofproject/sof-bin/releases/download/v$SOF/sof-bin-$SOF.tar.gz"; mv "$S/t.tmp" "$S/sof-bin-$SOF.tar.gz"; }
+tar xzf "$S/sof-bin-$SOF.tar.gz" -C "$M"
+for d in "$M/sof-bin-$SOF"/sof*; do
+  [ -e "$FW/intel/${d##*/}" ] && continue
+  mkdir -p "$FW/intel"; cp -a --no-preserve=ownership "$d" "$FW/intel/"; find "$FW/intel/${d##*/}" >> "$M/added"
+done
+RDB=${CHURRO_REGDB:-master-2026-09-03}
+for f in regulatory.db regulatory.db.p7s; do
+  [ -e "$FW/$f" ] && continue
+  [ -s "$S/$RDB-$f" ] || curl -fsSL --retry 3 -o "$S/$RDB-$f" \
+    "https://git.kernel.org/pub/scm/linux/kernel/git/wens/wireless-regdb.git/plain/$f?h=$RDB"
+  install -m 0644 "$S/$RDB-$f" "$FW/$f"; echo "$FW/$f" >> "$M/added"
+done
+
 # New files and dirs get the firmware dir's SELinux label (vendor_firmware_file).
 lbl=$(getfattr --absolute-names --only-values -n security.selinux "$FW")
-find "$FW" | while read -r x; do
-  getfattr --absolute-names --only-values -n security.selinux "$x" >/dev/null 2>&1 || setfattr -n security.selinux -v "$lbl" "$x"
+find "$FW" | while read -r x; do   # -h: symlinks (sof-bin) get their own label
+  getfattr -h --absolute-names --only-values -n security.selinux "$x" >/dev/null 2>&1 || setfattr -h -n security.selinux -v "$lbl" "$x"
 done
-echo "   vendor: +$(wc -l < "$M/added") firmware files ($( (xargs -r du -cm < "$M/added" | tail -1 | cut -f1) || echo 0) MiB) from linux-firmware $TAG"
+echo "   vendor: +$(wc -l < "$M/added") firmware files ($( (xargs -r du -cm < "$M/added" | tail -1 | cut -f1) || echo 0) MiB) from linux-firmware $TAG, sof-bin $SOF, wireless-regdb $RDB"

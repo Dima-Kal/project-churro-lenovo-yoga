@@ -1,0 +1,6 @@
+# Modules of our kernel build that must not go to vendor_dlkm (names with _, globs ok).
+# i915: opt-in ramdisk pack only (wedged Arrow Lake next to the image's xe).
+i915
+# kunit test modules
+*_kunit
+*_test

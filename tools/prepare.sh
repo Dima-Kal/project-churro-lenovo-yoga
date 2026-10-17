@@ -64,6 +64,7 @@ K=$C/kernel-$PROF-$BID-$KH
 bash "$HERE/tools/extract-certs.sh" "$W/vmlinux" > "$W/gki-certs.pem"
 grep -q BEGIN "$W/gki-certs.pem" || { echo "no signing certificate found in the image kernel" >&2; exit 1; }
 [ -f "$K/kernel" ] || CHURRO_GKI_CERTS=$W/gki-certs.pem bash "$HERE/kmod/build-kernel.sh" "$S/common" "$S/clang" "$S/rust" "$S/bin" "$W/ikconfig" "$REL" "$PROF" "$K"
+[ -f "$K/Module.symvers" ] || cp "$S/common/out-kernel-$PROF/Module.symvers" "$K/"   # drivers-extra's ABI check
 # kABI check: every symbol Google's GKI exports must keep its CRC, or prebuilt modules break
 [ -f "$C/vmlinux.symvers-$BID" ] || curl -fsSL -o "$C/vmlinux.symvers-$BID" "https://ci.android.com/builds/submitted/$BID/kernel_x86_64/latest/raw/vmlinux.symvers"
 bad=$(awk 'NR==FNR {crc[$2]=$1; next} ($2 in crc) && crc[$2] != $1 {n++; if (n<=5) print "   CRC differs: " $2 > "/dev/stderr"} END {print n+0}' \
