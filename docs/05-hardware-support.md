@@ -57,13 +57,34 @@ an Intel iGPU at 00:02.0 (hybrid laptops included) → `native`; else an NVIDIA 
 | Intel Wi-Fi / BT | image's iwlwifi/btintel + `firmware-extra` (modinfo-declared names + `extra.txt` for Bluetooth) | verify on MSI (`iwlwifi-so-a0-gf-a0-89`, `ibt-1040-0041`) |
 | Other Wi-Fi / BT | distro module set: ath9k/10k/11k/12k, rtw88/89, rtl8xxxu, mt76, brcm, … + their firmware + regulatory.db; they link against the image's cfg80211/mac80211 (CRCs match ours, so the ABI check accepts them) | verify on hardware; the opt-in `wifi` pack is probably obsolete |
 | Ethernet, USB devices, card readers, touchpads/touchscreens, sensors, HID | distro module set (`drivers-extra`, ~3000 modules, loaded by device alias) | test on more machines |
-| Audio | HDA + SOF from the image + distro codec/amp drivers; SOF firmware/topologies (sof-bin, merged per file), amp tunings via WHENCE; `audio-generic`: board audio cmdline/blocklist/options removed, codec drivers preloaded, HAL config for HD-audio cards (`PCH`, `Generic*`, `Intel`, `sofhdadsp`) bind-mounted over Google's board config, card renamed to the board's ID; works in QEMU (playback reaches the backend) | verify on MSI (speaker, headphones, mic, HDMI). Not covered: SoundWire / machine-specific SOF cards (need their own config) |
+| Audio | HDA + SOF from the image + distro codec/amp drivers; SOF firmware/topologies (sof-bin, merged per file), amp tunings via WHENCE; `audio-generic`: board audio cmdline/blocklist/options removed, codec drivers preloaded, HAL config for HD-audio cards (`PCH`, `Generic*`, `Intel`, `sofhdadsp`) bind-mounted over Google's board config, card renamed to the board's ID; works in QEMU (playback reaches the backend) | verify on MSI (speaker, headphones, mic, HDMI). Not covered: see "Known gaps" below |
 | Modules left out | ~50 the ABI check rejects: some need exports Google's GKI modules trim (usbnet, usb-serial, ptp, nfc, rfkill helpers) or Google built a dependency differently (a few HDA/SoundWire codecs) | ship our builds of those GKI modules too |
 | NPU (`intel_vpu`) | blacklisted (`CHURRO_NPU=false`): froze Arrow Lake | with `firmware-extra` the NPU firmware may now be there → retry with `CHURRO_NPU=true` |
 | BIOS flash | always inaccessible (`firmware-lockdown` + cmdline + SPI driver blacklist) | — |
 | Device firmware (SSD, hubs, cameras…) | `fwupd` removed (`firmware-lockdown`) | — |
 | TPM | drivers always blacklisted: the image's gscutil/check_tpm_clear would talk to the PC's TPM (BitLocker!) | — |
 | Security chip | not needed (`security-software`) | — |
+
+## Known gaps (to implement)
+
+**Audio** (`features/audio-generic`, docs/03). Covered today: HD-audio codecs on legacy
+`snd_hda_intel` (`PCH`, `Generic`/`Generic_1`, `Intel`) and on SOF's generic HDA machine
+(`sofhdadsp`). Not covered, each needs its own `mk` line in `patch-vendor.sh` and usually mixer
+setup in `mixer_paths.xml` (the controls these codecs need to route sound, which HDA does on its own):
+| Gap | Typical machines | What it needs |
+|---|---|---|
+| SoundWire laptops | recent premium Intel laptops (XPS / ThinkPad X1 class: RT711/RT1316, CS42L43) | card ID from `sof-soundwire`, PCM numbers and mixer controls per codec set (alsa-ucm-conf `sof-soundwire/*` is the reference) |
+| Machine-specific SOF cards | cheap ES8336 laptops, NAU8825/RT5682 Chromebook-style boards | one config per machine driver (alsa-ucm-conf has them) |
+| AMD ACP digital mics / SoundWire | AMD laptops (Ryzen 6000+) | speakers usually work via `Generic*` (HDA); the mic is a separate ACP card (`acp6x`, `acp63`, …) — a second input config |
+| HDMI audio on a separate GPU card | hybrid laptops with HDMI wired to the dGPU (MSI), desktops with discrete GPUs | the HAL only uses the one internal card; HDMI on another card (`NVidia`, `HDMI`) would need a second card in the HAL or the external-device path |
+| Unverified on SOF | — | internal mic PCM 6 and HDMI PCM 3–5 for `sofhdadsp` are from the standard topology, not tested; headphone/speaker switching relies on the kernel's auto-mute (Android shows no headphone state) |
+
+**Display colour.** Google's composer defaults are tuned for the Lenovo panel: BT.2020 colour
+mode, HDR, log-gamma LUT. GBRUNCH (docs/06) saw washed-out colours on their machine and forces
+SDR: `vendor.hwc.drm.force_color_mode=7`, `vendor.hwc.drm.persistent_hdr=false`,
+`vendor.hwc.drm.use_log_gamma_lut=false` (build.prop, same place `gfx-mesa` edits). Not applied
+yet on purpose: only if colours look washed out on the MSI (compare with Windows on the same
+panel); then add the three lines in `features/gfx-mesa/patch-vendor.sh`.
 
 ## Machines tried
 
@@ -72,7 +93,7 @@ an Intel iGPU at 00:02.0 (hybrid laptops included) → `native`; else an NVIDIA 
 | QEMU/KVM | host / virtio | boots to system_server; SurfaceFlinger crashes in softpipe (QEMU 2D virtio-gpu) |
 | Asus T300FA | Core M-5Y10 / HD 5300 | not bootable (CPU floor) |
 | HP AiO | older Intel | `init` invalid opcode (CPU floor) |
-| MSI (Core Ultra 7 255HX) | Arrow Lake / RTX 50 (10de:2f18) | hybrid mode: boots and runs (xe + our allocator); discrete (MUX) mode: works on nouveau/NVK (panel, HDMI, Chrome); distro driver set: audio/touchpad to test |
+| MSI (Core Ultra 7 255HX) | Arrow Lake / RTX 50 (10de:2f18) | hybrid mode: boots and runs (xe + our allocator); discrete (MUX) mode: works on nouveau/NVK (panel, HDMI, Chrome); distro driver set: touchpad works; audio (audio-generic) to test |
 
 ## Design direction: distro-style driver coverage (steps 1-2 done: distro module set + firmware)
 
