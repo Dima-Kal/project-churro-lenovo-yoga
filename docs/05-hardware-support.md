@@ -23,16 +23,39 @@ system init scripts for new updaters with each new Googlebook image (`grep -rE
 
 ## Hard floor: the CPU
 
-Googlebook userspace is compiled for recent Intel CPUs. First-stage `init` already executes GFNI
-(`vgf2p8affineqb`); `surfaceflinger` uses AVX-VNNI (VEX), VAES, SHA. All Intel Googlebook images
-share the same build, the other two are ARM (Snapdragon). Seen on real hardware: HP AiO (older
-Intel) → `init trap invalid opcode` → panic; Asus T300FA (Broadwell) can't boot either.
+Googlebook userspace is compiled with `-march=pantherlake` (seen in
+`dalvik.vm.isa.x86_64.variant=pantherlake`), so the compiler emits recent instructions
+**unconditionally** — not behind runtime CPU checks — into core binaries including `init`, `fs_mgr`
+and `libinput`. An ELF scan of the image (~3100 files) found baked in everywhere: AVX2/BMI2/MOVBE/FMA
+(hard floor = Haswell, ~2013), GFNI (271 files, incl. `init`), AVX-VNNI VEX (init + ~108 files), and
+**AVX-IFMA VEX** — emitted by the Rust float formatter (`zmij`), so it lands in libinput,
+libinputflinger and other core libs. All Intel Googlebook images share this one build (the other two
+targets are ARM/Snapdragon). A CPU missing any of these faults with `#UD` in a core process → panic.
+SHA-NI/VAES are mostly BoringSSL (runtime-dispatched, safe) and the AVX-512 EVEX hits are dispatched.
 
-| CPU | Status |
-|---|---|
-| Intel 12th gen (Alder Lake) and newer, N100/N200 | OK |
-| AMD | probably Zen 5 (AVX-VNNI) — unverified |
-| Older | needs instruction emulation in the Churro kernel (#UD trap → emulate GFNI/AVX-VNNI/VAES/SHA); research project, possibly slow |
+**This corrects the earlier "12th gen (Alder Lake) is fine": AVX-IFMA VEX is missing on
+Alder/Raptor/Meteor Lake too**, so the true native floor is ~Arrow Lake / Lunar Lake / Panther Lake
+(+ AMD Zen 5). Running below it means either trapping the missing instructions (a kernel `#UD`
+handler) or rewriting the binaries offline. A trap handler is **dormant on a CPU that has the
+instructions** — zero cost on the MSI.
+
+Seen on real hardware: HP AiO (older Intel) → `init trap invalid opcode` → panic; Asus T300FA
+(Broadwell) won't boot; Asus VivoBook 15 (i7-1165G7, Tiger Lake) → `{vex} vpdpwssd` (AVX-VNNI) in
+second-stage `init` → panic.
+
+| CPU class | Missing vs. the image | To boot |
+|---|---|---|
+| Arrow/Lunar/Panther Lake, AMD Zen 5 | nothing | boots as-is (the MSI) |
+| Ice/Tiger/Rocket Lake, AMD Zen 4 | AVX-VNNI VEX + AVX-IFMA VEX only | both have the identical EVEX AVX-512 forms → emulator can re-encode + re-run |
+| Alder/Raptor/Meteor Lake | AVX-IFMA VEX only (they have AVX-VNNI) | emulate AVX-IFMA |
+| Haswell → Comet Lake, Zen 1–3 | + GFNI + the whole VNNI/IFMA family | emulate via AVX2 sequences; GFNI is in hot loops (libyuv) → real perf cost |
+| pre-Haswell; Atom without AVX | AVX2/BMI2, everywhere | not feasible |
+
+Plan (not yet chosen or started): a kernel `#UD` handler scoped to AVX-VNNI + AVX-IFMA first — covers
+Ice Lake → Meteor Lake + Zen 4, including the VivoBook — with a trap counter to see whether any path
+is hot enough to also need offline rewriting; GFNI / the lower tier later, only if pre-2021 hardware
+matters. brunch (docs/06) does none of this: it selects a prebuilt image per CPU family and declares
+older CPUs unsupported.
 
 ## GPU
 
