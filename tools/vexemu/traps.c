@@ -696,11 +696,221 @@ static void churro_vex_write(struct xregs_state *xs, int n, const u32 *v, bool y
 	}
 }
 
+/* --- run-ahead --- */
+/*
+ * After an emulated legacy-SSE instruction (SHA-NI), keep interpreting the straight-line code
+ * that follows instead of returning to user space. BoringSSL's SHA-256 loop (libcrypto's FIPS
+ * self-check runs it in every process that loads libcrypto) is 56 SHA-NI ops per 64-byte block
+ * interleaved with movdqa/movdqu/paddd/pshufd/palignr/pshufb/punpck*qdq, lea and nops: with
+ * run-ahead a block costs ~1 trap instead of 56. Only that exact allow-list is interpreted;
+ * anything else (stores, branches, other prefixes or VEX, a load that would fault or #GP on
+ * alignment) ends the run and the CPU executes it natively, so stopping is always correct.
+ * None of the allowed instructions touch EFLAGS. The run works on copies of the XMM low halves
+ * (legacy SSE never writes bits 255:128) and of the GPRs (lea, addressing).
+ * churro.vexemu_runahead=0 in bootconfig disables it.
+ */
+#define CHURRO_RA_MAX	256
+
+enum churro_ra_kind {
+	CHURRO_RA_MOV, CHURRO_RA_PADDD, CHURRO_RA_PSHUFD, CHURRO_RA_PALIGNR,
+	CHURRO_RA_PSHUFB, CHURRO_RA_PUNPCKLQDQ, CHURRO_RA_PUNPCKHQDQ, CHURRO_RA_SHA,
+};
+
+static bool churro_vexemu_runahead = true;
+module_param(churro_vexemu_runahead, bool, 0644);
+MODULE_PARM_DESC(churro_vexemu_runahead,
+	"After an emulated SHA-NI instruction, also interpret the following plain SSE code");
+
+static int __init churro_vexemu_runahead_setup(char *str)
+{
+	return kstrtobool(str, &churro_vexemu_runahead) == 0;
+}
+__setup("churro.vexemu_runahead=", churro_vexemu_runahead_setup);
+
+static atomic64_t churro_runahead_count;
+
+/* d = destination (in/out), s = a copy of the source, x0 = xmm0 (sha256rnds2's WK) */
+static void churro_ra_exec(u32 *d, const u32 *s, const u32 *x0, int kind, int sha_op,
+			   u8 imm)
+{
+	const u8 *sb = (const u8 *)s;
+	u8 *db = (u8 *)d, b[32];
+	u32 t[4];
+	int i;
+
+	switch (kind) {
+	case CHURRO_RA_MOV:
+		memcpy(d, s, 16);
+		return;
+	case CHURRO_RA_PADDD:
+		for (i = 0; i < 4; i++)
+			d[i] += s[i];
+		return;
+	case CHURRO_RA_PSHUFD:
+		for (i = 0; i < 4; i++)
+			t[i] = s[(imm >> (2 * i)) & 3];
+		memcpy(d, t, 16);
+		return;
+	case CHURRO_RA_PALIGNR:	/* (dest:src) >> imm bytes, low 16 */
+		memcpy(b, s, 16);
+		memcpy(b + 16, d, 16);
+		for (i = 0; i < 16; i++)
+			db[i] = i + imm < 32 ? b[i + imm] : 0;
+		return;
+	case CHURRO_RA_PSHUFB:	/* bytes of dest, selected by src */
+		memcpy(b, d, 16);
+		for (i = 0; i < 16; i++)
+			db[i] = sb[i] & 0x80 ? 0 : b[sb[i] & 15];
+		return;
+	case CHURRO_RA_PUNPCKLQDQ:
+		d[2] = s[0];
+		d[3] = s[1];
+		return;
+	case CHURRO_RA_PUNPCKHQDQ:
+		d[0] = d[2];
+		d[1] = d[3];
+		d[2] = s[2];
+		d[3] = s[3];
+		return;
+	default:
+		churro_sha_exec(t, d, s, x0, sha_op, imm);
+		memcpy(d, t, 16);
+		return;
+	}
+}
+
+/* interpret the allow-listed instruction at r->ip; false = stop here (the CPU runs it) */
+static bool churro_ra_step(struct pt_regs *r, u32 (*x)[4], u16 *dirty)
+{
+	u8 buf[MAX_INSN_SIZE], pfx = 0, imm = 0, rex;
+	int len, i, n, kind, sha_op = 0, dst;
+	bool aligned = true;
+	struct insn insn;
+	insn_byte_t p;
+	const u8 *ob;
+	u32 m[4];
+
+	len = MAX_INSN_SIZE - copy_from_user(buf, (void __user *)r->ip, MAX_INSN_SIZE);
+	if (len < 1 || insn_decode(&insn, buf, len, INSN_MODE_64) || insn.vex_prefix.nbytes)
+		return false;
+	/* legacy prefixes (distinct bytes, as for_each_insn_prefix walks them): one 66 or F3 */
+	for (i = 0; i < ARRAY_SIZE(insn.prefixes.bytes) && (p = insn.prefixes.bytes[i]); i++) {
+		if ((p != 0x66 && p != 0xf3) || pfx)
+			return false;
+		pfx = p;
+	}
+	ob = insn.opcode.bytes;
+	n = insn.opcode.nbytes;
+	rex = insn.rex_prefix.nbytes ? insn.rex_prefix.bytes[0] : 0;
+
+	/* nop (90) and the multi-byte nop (0F 1F /0) */
+	if ((n == 1 && ob[0] == 0x90 && !pfx && !rex) ||
+	    (n == 2 && ob[0] == 0x0f && ob[1] == 0x1f)) {
+		r->ip += insn.length;
+		return true;
+	}
+	/* lea r64, m */
+	if (n == 1 && ob[0] == 0x8d && !pfx && X86_REX_W(rex) &&
+	    X86_MODRM_MOD(insn.modrm.value) != 3) {
+		void __user *ea = insn_get_addr_ref(&insn, r);
+		unsigned long *reg = insn_get_modrm_reg_ptr(&insn, r);
+
+		if (ea == (void __user *)-1L || !reg)
+			return false;
+		*reg = (unsigned long)ea;
+		r->ip += insn.length;
+		return true;
+	}
+
+	if (!pfx && n == 3 && ob[0] == 0x0f && ob[1] == 0x38 && ob[2] >= 0xc8 && ob[2] <= 0xcd) {
+		kind = CHURRO_RA_SHA;
+		sha_op = CHURRO_SHA1NEXTE + ob[2] - 0xc8;
+	} else if (!pfx && n == 3 && ob[0] == 0x0f && ob[1] == 0x3a && ob[2] == 0xcc) {
+		kind = CHURRO_RA_SHA;
+		sha_op = CHURRO_SHA1RNDS4;
+	} else if (pfx == 0xf3 && n == 2 && ob[0] == 0x0f && ob[1] == 0x6f) {
+		kind = CHURRO_RA_MOV;		/* movdqu */
+		aligned = false;
+	} else if (pfx != 0x66 || ob[0] != 0x0f) {
+		return false;
+	} else if (n == 2 && ob[1] == 0x6f) {
+		kind = CHURRO_RA_MOV;		/* movdqa */
+	} else if (n == 2 && ob[1] == 0xfe) {
+		kind = CHURRO_RA_PADDD;
+	} else if (n == 2 && ob[1] == 0x70) {
+		kind = CHURRO_RA_PSHUFD;
+	} else if (n == 2 && ob[1] == 0x6c) {
+		kind = CHURRO_RA_PUNPCKLQDQ;
+	} else if (n == 2 && ob[1] == 0x6d) {
+		kind = CHURRO_RA_PUNPCKHQDQ;
+	} else if (n == 3 && ob[1] == 0x38 && ob[2] == 0x00) {
+		kind = CHURRO_RA_PSHUFB;
+	} else if (n == 3 && ob[1] == 0x3a && ob[2] == 0x0f) {
+		kind = CHURRO_RA_PALIGNR;
+	} else {
+		return false;
+	}
+
+	if (insn.immediate.nbytes)
+		imm = insn.immediate.value & 0xff;
+	dst = X86_MODRM_REG(insn.modrm.value) + (X86_REX_R(rex) ? 8 : 0);
+	if (X86_MODRM_MOD(insn.modrm.value) == 3) {
+		memcpy(m, x[X86_MODRM_RM(insn.modrm.value) + (X86_REX_B(rex) ? 8 : 0)], 16);
+	} else {
+		void __user *ea = insn_get_addr_ref(&insn, r);
+
+		/* legacy SSE m128 must be 16-byte aligned (but movdqu): let the CPU #GP/#PF */
+		if (ea == (void __user *)-1L || (aligned && ((unsigned long)ea & 15)) ||
+		    copy_from_user(m, ea, 16))
+			return false;
+	}
+	churro_ra_exec(x[dst], m, x[0], kind, sha_op, imm);
+	*dirty |= 1 << dst;
+	r->ip += insn.length;
+	return true;
+}
+
+/*
+ * x = the XMM low halves right after the trapping instruction. Interprets from regs->ip on,
+ * then writes back the touched XMM registers, the GPRs and the new ip. Returns the count.
+ */
+static int churro_runahead(struct pt_regs *regs, u32 (*x)[4])
+{
+	struct fpu *fpu = x86_task_fpu(current);
+	struct pt_regs r = *regs;
+	struct xregs_state *xs;
+	u16 dirty = 0;
+	int n = 0, i;
+
+	if (!churro_vexemu_runahead || (regs->flags & X86_EFLAGS_TF))
+		return 0;
+	while (n < CHURRO_RA_MAX && churro_ra_step(&r, x, &dirty))
+		n++;
+	if (!n)
+		return 0;
+	if (dirty) {
+		fpregs_lock();
+		if (test_thread_flag(TIF_NEED_FPU_LOAD))
+			switch_fpu_return();
+		save_fpregs_to_fpstate(fpu);
+		xs = &fpu->fpstate->regs.xsave;
+		for (i = 0; i < 16; i++)
+			if (dirty & (1 << i))
+				churro_vex_write(xs, i, x[i], false, true);
+		restore_fpregs_from_fpstate(fpu->fpstate, XFEATURE_MASK_FPSTATE);
+		fpregs_unlock();
+	}
+	*regs = r;	/* ip, and GPRs a lea changed; nothing else touched them meanwhile */
+	atomic64_add(n, &churro_runahead_count);
+	return n;
+}
+/* --- end run-ahead --- */
+
 /* returns true when the #UD was one of the emulated instructions (see top) */
 static bool handle_vex_ud(struct pt_regs *regs)
 {
 	u8 buf[MAX_INSN_SIZE];
-	u32 va[8], vb[8], vd[8], vacc[8];
+	u32 va[8], vb[8], vd[8], vacc[8], ra[16][4];
 	struct insn insn;
 	struct fpu *fpu = x86_task_fpu(current);
 	struct xregs_state *xs;
@@ -708,7 +918,7 @@ static bool handle_vex_ud(struct pt_regs *regs)
 	u32 saved_rex;
 	void __user *ea;
 	u8 vex1, vex2, imm = 0;
-	int len, op, y, s1, s2, dst, map;
+	int len, op, y, s1, s2, dst, map, i, ran = 0;
 
 	if (!churro_vexemu)
 		return false;
@@ -856,16 +1066,22 @@ static bool handle_vex_ud(struct pt_regs *regs)
 	else
 		churro_vex_vnni(vd, vacc, va, vb, y ? 8 : 4, op);
 	churro_vex_write(xs, dst, vd, y, legacy);
+	if (legacy)	/* run-ahead input: the XMM low halves as they are now */
+		for (i = 0; i < 16; i++)
+			churro_vex_read(xs, i, ra[i], false);
 
 	restore_fpregs_from_fpstate(fpu->fpstate, XFEATURE_MASK_FPSTATE);
 	fpregs_unlock();
 
 	regs->ip += insn.length;
+	if (legacy)
+		ran = churro_runahead(regs, ra);
 	atomic64_inc(&churro_vexemu_count[op]);
 	if (__ratelimit(&churro_vexemu_rs))
-		pr_info("churro-vexemu: %s in %s[%d], trap #%lld\n",
+		pr_info("churro-vexemu: %s in %s[%d], trap #%lld (+%d run-ahead, %lld total)\n",
 			churro_vexemu_names[op], current->comm, task_pid_nr(current),
-			atomic64_read(&churro_vexemu_count[op]));
+			atomic64_read(&churro_vexemu_count[op]), ran,
+			atomic64_read(&churro_runahead_count));
 	return true;
 }
 

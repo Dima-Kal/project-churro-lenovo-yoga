@@ -4,7 +4,7 @@
 #   tools/vextest/run.sh native         run on this machine native-only (ground truth check)
 #   tools/vextest/run.sh qemu <bzImage> [emulator-mode]
 #       boot a bare initramfs on <bzImage> under TCG with a gap CPU; modes:
-#       emu  = "-cpu max,-avx-vnni,-avx-ifma,-vaes churro.vexemu=1":  emulated cases -> PASS
+#       emu  = "-cpu max,-avx-vnni,-avx-ifma,-vaes,-sha-ni churro.vexemu=1":  emulated cases -> PASS
 #       off  = same CPU + "churro.vexemu=0":                      init must die with SIGILL
 #       max  = "-cpu max" (TCG's native mix; VNNI emulated or native depending on QEMU)
 set -euo pipefail
@@ -34,8 +34,8 @@ qemu)
   [ -x "$B" ] || do_build
   BZ=$2; MODE=${3:-emu}
   case $MODE in
-    emu) CPU='max,-avx-vnni,-avx-ifma,-vaes'; EX='churro.vexemu=1' ;;
-    off) CPU='max,-avx-vnni,-avx-ifma,-vaes'; EX='churro.vexemu=0' ;;
+    emu) CPU='max,-avx-vnni,-avx-ifma,-vaes,-sha-ni'; EX='churro.vexemu=1' ;;
+    off) CPU='max,-avx-vnni,-avx-ifma,-vaes,-sha-ni'; EX='churro.vexemu=0' ;;
     max) CPU='max'; EX='churro.vexemu=1' ;;
     *) echo "unknown mode $MODE" >&2; exit 1 ;;
   esac
@@ -44,12 +44,14 @@ qemu)
   mknod -m666 "$T/root/dev/console" c 5 1 2>/dev/null || true
   mknod -m666 "$T/root/dev/ttyS0" c 4 64 2>/dev/null || true
   mknod -m666 "$T/root/dev/null" c 1 3 2>/dev/null || true
+  # vextest logs via /dev/kmsg: GKI has no devtmpfs and its 8250 is a module (no /dev/ttyS0 tty)
+  mknod -m666 "$T/root/dev/kmsg" c 1 11 2>/dev/null || true
   (cd "$T/root" && find . | cpio -o -H newc --quiet | gzip -1 > "$T/initrd.cpio.gz")
   LOG=$T/qemu-$MODE.log
   echo ">> booting $BZ (TCG $CPU, $EX) — log $LOG"
   timeout 600 qemu-system-x86_64 -accel tcg -machine q35 -cpu "$CPU" -smp 2 -m 1G \
     -kernel "$BZ" -initrd "$T/initrd.cpio.gz" \
-    -append "earlycon=uart8250,io,0x3f8 console=ttyS0 loglevel=7 $EX panic=1" \
+    -append "earlycon=uart8250,io,0x3f8 console=ttyS0 loglevel=7 printk.devkmsg=on $EX panic=1" \
     -display none -no-reboot -serial file:"$LOG" </dev/null || true
   echo "---- VEXTEST lines ----"
   grep -a 'VEXTEST\|churro-vexemu\|trap invalid' "$LOG" | tail -30

@@ -57,6 +57,7 @@ extern void sha256msg1_rex45(u32 *r, const u32 *a, const u32 *b, const u32 *acc)
 extern void sha256msg2_rex44(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void sha1nexte_rex41(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void sha256rnds2_rex45(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
+extern void ra_chain(u32 *x, const u32 *m);
 extern void vaesenc_256_reg(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void vaesenclast_256_reg(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void vaesdec_256_reg(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
@@ -314,6 +315,50 @@ static void ref_aesenc(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int l
 static void ref_aesenclast(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int lanes) { ref_aes(d, acc, a, b, lanes, 0, 1); }
 static void ref_aesdec(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int lanes) { ref_aes(d, acc, a, b, lanes, 1, 0); }
 static void ref_aesdeclast(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int lanes) { ref_aes(d, acc, a, b, lanes, 1, 1); }
+
+// ra_chain's straight-line code (vexops.S), op by op: x = 16 xmm (u32 lanes), m = data buffer.
+// On a gap CPU only the first sha256rnds2 traps; the kernel's run-ahead interprets the rest.
+static void cp4(u32 *d, const u32 *s) { for (int i = 0; i < 4; i++) d[i] = s[i]; }
+static void ra_model(u32 x[16][4], const u32 *m) {
+	u32 t[4], s[4];
+	unsigned char b[32], *db; const unsigned char *sb;
+	int i;
+	ref_s256r2(t, x[2], x[0], x[1], 4); cp4(x[2], t);		// sha256rnds2 %xmm0,%xmm1,%xmm2
+	cp4(s, x[0]); for (i = 0; i < 4; i++) x[0][i] = s[(0x0e >> (2 * i)) & 3];	// pshufd $0xe
+	cp4(x[9], x[1]);						// movdqa %xmm1,%xmm9
+	ref_s256m1(t, x[3], x[0], x[4], 4); cp4(x[3], t);		// sha256msg1 %xmm4,%xmm3
+	for (i = 0; i < 4; i++) x[0][i] += m[4 + i];			// paddd 0x10(%rsi),%xmm0
+	sb = (const unsigned char *)x[5]; db = (unsigned char *)x[7];	// palignr $4,%xmm5,%xmm7
+	for (i = 0; i < 16; i++) { b[i] = sb[i]; b[16 + i] = db[i]; }
+	for (i = 0; i < 16; i++) db[i] = b[i + 4];
+	sb = (const unsigned char *)x[8]; db = (unsigned char *)x[6];	// pshufb %xmm8,%xmm6
+	for (i = 0; i < 16; i++) b[i] = db[i];
+	for (i = 0; i < 16; i++) db[i] = sb[i] & 0x80 ? 0 : b[sb[i] & 15];
+	ref_s256m2(t, x[3], x[0], x[6], 4); cp4(x[3], t);		// sha256msg2 %xmm6,%xmm3
+	x[10][2] = x[0][0]; x[10][3] = x[0][1];				// punpcklqdq %xmm0,%xmm10
+	x[12][0] = x[12][2]; x[12][1] = x[12][3]; x[12][2] = x[11][2]; x[12][3] = x[11][3];	// punpckhqdq
+	m += 8;								// lea 0x20(%rsi),%rsi
+	cp4(x[13], m);							// movdqa (%rsi),%xmm13
+	cp4(x[14], m + 9);						// movdqu 0x24(%rsi),%xmm14
+	ref_s256r2(t, x[11], x[0], x[9], 4); cp4(x[11], t);		// sha256rnds2 %xmm0,%xmm9,%xmm11
+	ref_s1r4(t, x[14], x[0], x[15], 4, 1); cp4(x[14], t);		// sha1rnds4 $1,%xmm15,%xmm14
+}
+static int ra_chain_test(void) {
+	static u32 got[16][4], want[16][4], m[24] __attribute__((aligned(64)));
+	u32 seed = 0x5eed1234;
+	for (int i = 0; i < 16; i++)
+		for (int j = 0; j < 4; j++) { seed = seed * 1103515245 + 12345; got[i][j] = want[i][j] = seed; }
+	for (int i = 0; i < 24; i++) { seed = seed * 1103515245 + 12345; m[i] = seed; }
+	ra_chain(&got[0][0], m);
+	ra_model(want, m);
+	int bad = 0;
+	for (int i = 0; i < 16; i++)
+		for (int j = 0; j < 4; j++)
+			if (got[i][j] != want[i][j]) {
+				if (!bad++) { lpos = 0; lbs("VEXTEST runahead/sha-chain FAIL xmm"); lbd(i); lbs(" got="); lbx(got[i][j]); lbs(" want="); lbx(want[i][j]); lbs("\n"); lb_flush(); }
+			}
+	return bad;
+}
 
 // ------- drivers -------
 typedef void (*stub_t)(u32 *, const u32 *, const u32 *, const u32 *);
@@ -828,6 +873,14 @@ void cstart(long *sp) {
 	lbs(have_sha ? "native " : "emu "); lbs(orc ? "FAIL" : "ok");
 	lbs(" digest=");
 	for (int i = 0; i < 8; i++) lbx(digest[i]);
+	lbs("\n"); lb_flush();
+	int rf = ra_chain_test();
+	total++;
+	if (!rf) pass++;
+	else stage_fail |= 1;
+	lpos = 0;
+	lbs("VEXTEST runahead/sha-chain ");
+	lbs(rf ? "FAIL" : (have_sha ? "native ok" : "emu ok"));
 	lbs("\n"); lb_flush();
 	int cf = chain_stress();
 	total++;

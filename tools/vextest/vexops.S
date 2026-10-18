@@ -207,6 +207,62 @@ SHAREX(sha256msg2_rex44, 0x44, 0xcd, %ymm10)
 SHAREX(sha1nexte_rex41, 0x41, 0xc8, %ymm2)
 SHAREX(sha256rnds2_rex45, 0x45, 0xcb, %ymm10)
 
+// ra_chain(x = rdi: 16 xmm in/out, m = rsi: 64-byte-aligned 96-byte buffer): one trapping
+// SHA-NI op followed by straight-line plain SSE in the shape of BoringSSL's SHA-256 loop, so the
+// kernel's run-ahead interprets everything up to the stores. Mirrored by ra_model() in vextest.c.
+	.globl ra_chain
+ra_chain:
+	movdqu	0x00(%rdi), %xmm0
+	movdqu	0x10(%rdi), %xmm1
+	movdqu	0x20(%rdi), %xmm2
+	movdqu	0x30(%rdi), %xmm3
+	movdqu	0x40(%rdi), %xmm4
+	movdqu	0x50(%rdi), %xmm5
+	movdqu	0x60(%rdi), %xmm6
+	movdqu	0x70(%rdi), %xmm7
+	movdqu	0x80(%rdi), %xmm8
+	movdqu	0x90(%rdi), %xmm9
+	movdqu	0xa0(%rdi), %xmm10
+	movdqu	0xb0(%rdi), %xmm11
+	movdqu	0xc0(%rdi), %xmm12
+	movdqu	0xd0(%rdi), %xmm13
+	movdqu	0xe0(%rdi), %xmm14
+	movdqu	0xf0(%rdi), %xmm15
+	sha256rnds2 %xmm0, %xmm1, %xmm2		// traps on a gap CPU; the rest is run-ahead
+	pshufd	$0x0e, %xmm0, %xmm0
+	nop
+	movdqa	%xmm1, %xmm9
+	sha256msg1 %xmm4, %xmm3
+	paddd	0x10(%rsi), %xmm0
+	palignr	$4, %xmm5, %xmm7
+	pshufb	%xmm8, %xmm6
+	sha256msg2 %xmm6, %xmm3
+	punpcklqdq %xmm0, %xmm10
+	punpckhqdq %xmm11, %xmm12
+	lea	0x20(%rsi), %rsi
+	movdqa	(%rsi), %xmm13
+	movdqu	0x24(%rsi), %xmm14
+	sha256rnds2 %xmm0, %xmm9, %xmm11
+	sha1rnds4 $1, %xmm15, %xmm14
+	nopl	0x0(%rax,%rax,1)
+	movdqu	%xmm0, 0x00(%rdi)
+	movdqu	%xmm1, 0x10(%rdi)
+	movdqu	%xmm2, 0x20(%rdi)
+	movdqu	%xmm3, 0x30(%rdi)
+	movdqu	%xmm4, 0x40(%rdi)
+	movdqu	%xmm5, 0x50(%rdi)
+	movdqu	%xmm6, 0x60(%rdi)
+	movdqu	%xmm7, 0x70(%rdi)
+	movdqu	%xmm8, 0x80(%rdi)
+	movdqu	%xmm9, 0x90(%rdi)
+	movdqu	%xmm10, 0xa0(%rdi)
+	movdqu	%xmm11, 0xb0(%rdi)
+	movdqu	%xmm12, 0xc0(%rdi)
+	movdqu	%xmm13, 0xd0(%rdi)
+	movdqu	%xmm14, 0xe0(%rdi)
+	movdqu	%xmm15, 0xf0(%rdi)
+	ret
+
 // --- vpclmulqdq: VEX.66.0F3A.W0 0x44 /r ib ---
 #define PCMSTUB(name, b2, imm)			\
 	.globl name;				\

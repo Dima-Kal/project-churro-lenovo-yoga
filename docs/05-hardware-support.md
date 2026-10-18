@@ -57,7 +57,23 @@ AVX-VNNI `vpdpbusd(s)`/`vpdpwssd(s)`, AVX-IFMA `vpmadd52l/huq`, GFNI
 `gf2p8affine[inv]qb`/`gf2p8mulb`, VPCLMULQDQ (VEX 128/256), 256-bit VAES
 (`vaesenc/enclast/dec/declast` ymm), and the legacy-encoded SHA-NI set
 (`sha1rnds4/nexte/msg1/msg2`, `sha256rnds2/msg1/msg2`, incl. the REX forms for xmm8–15 that
-BoringSSL and liblzma use; legacy writes keep the upper YMM half). GFNI and SHA land here because
+BoringSSL and liblzma use; legacy writes keep the upper YMM half).
+
+**Run-ahead (SHA-NI cost).** First T300FA boot (Broadwell): 1.87 billion traps in 19 min, ~2.3 M/s
+sustained = the whole CPU; 93 % SHA-256, from processes like `cp`/`mv`/`log` (toybox links
+libcrypto, whose constructor runs BoringSSL's FIPS integrity check = SHA-256 over its own code, in
+every process). BoringSSL's SHA-NI loop is 56 SHA ops per 64-byte block interleaved with plain
+SSE, so after a trapping SHA op the handler now keeps interpreting the straight-line code that
+follows (`churro_ra_step`): an exact allow-list (`movdqa`/`movdqu` loads + reg moves, `paddd`,
+`pshufd`, `palignr`, `pshufb`, `punpckl/hqdq`, SHA-NI, `lea r64,m`, nops; one 66/F3 prefix, REX),
+on copies of the XMM low halves and GPRs, written back once. Anything else ends the run and the
+CPU executes it natively: stores, branches, flag-setting ops, VEX, segment prefixes, a load that
+would fault or a misaligned `movdqa` (#GP), single-stepping (`TF`); max 256 per trap. On the real
+libcrypto block it covers 55 of 56 SHA ops (stops at the loop's `dec`): ~2 traps per block
+instead of 56. `churro.vexemu_runahead=0` turns it off; the dmesg trap line shows `+N run-ahead`.
+Validated by a differential test (kernel decoder from `tools/` + the extracted run-ahead code vs.
+native execution of 10,000+ random allow-listed programs on Arrow Lake: 0 mismatches; mutations of
+paddd/palignr/pshufb/REX/alignment all caught) and vextest `runahead/sha-chain`. GFNI and SHA land here because
 `init`'s libcrypto (AES key schedule) and BoringSSL's FIPS module check (HMAC-SHA-256) run
 them unconditionally; `vpclmulqdq` likewise via AES-GCM, and `vaesenc ymm` via the FIPS
 self-test (`libcrypto.so` from second-stage `init`: SIGILL right after first stage on the
