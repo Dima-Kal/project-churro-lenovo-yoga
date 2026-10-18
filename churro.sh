@@ -60,7 +60,7 @@ grow_userdata() { local un us; sgdisk -e "$1" >/dev/null
 
 cmd_build() {
   local in=$1 out=$2; shift 2
-  local packs=() bsrc=external feats=security-software,firmware-lockdown repack=1 kdir="" dsize=0
+  local packs=() bsrc=external feats=security-software,firmware-lockdown repack=1 kdir="" dsize=0 vexemu=1
   while [ $# -gt 0 ]; do case $1 in
     --modules) packs+=("$2"); shift 2 ;;
     --data-size) dsize=$2; shift 2 ;;   # GiB for userdata (image grows; 0 = keep the image's 4 GiB)
@@ -68,6 +68,7 @@ cmd_build() {
     --no-repack) repack=0; shift ;;     # dev: partitions already patched, only redo boot files
     --boot-source) bsrc=$2; shift 2 ;;
     --kernel) kdir=$2; shift 2 ;;      # Churro kernel dir from kmod/build-kernel.sh (kernel, kernel.release)
+    --vexemu) vexemu=$2; shift 2 ;;
     *) die "unknown option $1" ;; esac; done
   need losetup sgdisk mkfs.vfat grub-mkstandalone cpio lz4 od
   [ "$(id -u)" = 0 ] || die "run as root"
@@ -123,6 +124,7 @@ androidboot.vbmeta.device_state=unlocked
 androidboot.veritymode=enforcing
 androidboot.serialno=CHURRO$(od -An -tx1 -N4 /dev/urandom | tr -d ' ')
 androidboot.bootloader=churro-grub
+churro.vexemu=$vexemu
 EOF
   for f in "${fdirs[@]}"; do [ -f "$f/bootconfig" ] && cat "$f/bootconfig" >> "$W/bootconfig.txt"; done
   bootconfig_pack "$W/bootconfig.txt" "$W/bootconfig.bin"
@@ -230,12 +232,13 @@ cmd_install() {
 # --gfx auto (default): the boot menu picks the graphics stack from the GPUs it finds (esp.sh).
 cmd_auto() {
   local in=$1 out=$2; shift 2
-  local gfx=auto kprof=generic packs=virt,gpu,storage xfeat="" dsize=12
+  local gfx=auto kprof=generic packs=virt,gpu,storage xfeat="" dsize=12 vexemu=1
   while [ $# -gt 0 ]; do case $1 in
     --gfx) gfx=$2; shift 2 ;; --kernel-profile) kprof=$2; shift 2 ;;
     --data-size) dsize=$2; shift 2 ;;   # userdata GiB (default 12: image ~26 GiB, needs a 32 GB stick)
     --packs) packs=$2; shift 2 ;;   # module packs from prepare.sh: virt,gpu,storage[,wifi,i915]
     --extra-features) xfeat=,$2; shift 2 ;;   # extra features for test builds
+    --vexemu) vexemu=$2; shift 2 ;;
     *) die "unknown option $1" ;; esac; done
   bash "$HERE/tools/prepare.sh" "$in" "$kprof"
   local envf; envf=$(ls -t "${CHURRO_CACHE:-/var/cache/churro}"/prepared-*.env | head -1)
@@ -244,7 +247,7 @@ cmd_auto() {
   local margs=() p; for p in ${packs//,/ }; do
     [ -d "$CHURRO_PACK_DIR/$p" ] || die "no module pack '$p' in $CHURRO_PACK_DIR"; margs+=(--modules "$CHURRO_PACK_DIR/$p"); done
   [ "$gfx" = auto ] || CHURRO_EXTRA_ARGS="androidboot.churro.gfx=$gfx ${CHURRO_EXTRA_ARGS:-}"
-  cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,gfx-minigbm,gpu-nouveau,drivers-extra,audio-generic,debug-log$xfeat" "${margs[@]}"
+  cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --vexemu "$vexemu" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,gfx-minigbm,gpu-nouveau,drivers-extra,audio-generic,debug-log$xfeat" "${margs[@]}"
 }
 
 case ${1:-} in auto|build|install) deps_ensure ;; esac

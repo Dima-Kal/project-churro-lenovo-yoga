@@ -46,15 +46,45 @@ second-stage `init` → panic.
 | CPU class | Missing vs. the image | To boot |
 |---|---|---|
 | Arrow/Lunar/Panther Lake, AMD Zen 5 | nothing | boots as-is (the MSI) |
-| Ice/Tiger/Rocket Lake, AMD Zen 4 | AVX-VNNI VEX + AVX-IFMA VEX only | both have the identical EVEX AVX-512 forms → emulator can re-encode + re-run |
-| Alder/Raptor/Meteor Lake | AVX-IFMA VEX only (they have AVX-VNNI) | emulate AVX-IFMA |
-| Haswell → Comet Lake, Zen 1–3 | + GFNI + the whole VNNI/IFMA family | emulate via AVX2 sequences; GFNI is in hot loops (libyuv) → real perf cost |
+| Ice/Tiger/Rocket Lake, AMD Zen 4 | AVX-VNNI VEX + AVX-IFMA VEX (Zen 4: none) + SHA-NI (Ice/Tiger) | emulated in-kernel on `#UD` |
+| Alder/Raptor/Meteor Lake | AVX-IFMA VEX only (they have AVX-VNNI) | emulated (only the 2 IFMA ops trap) |
+| Haswell → Comet Lake, Zen 1–3 | + GFNI (+ SHA/CLMUL if used by crypto paths) | all 17 emulated; GFNI sits in hot loops (libyuv) → real perf cost |
 | pre-Haswell; Atom without AVX | AVX2/BMI2, everywhere | not feasible |
 
-Plan (not yet chosen or started): a kernel `#UD` handler scoped to AVX-VNNI + AVX-IFMA first — covers
-Ice Lake → Meteor Lake + Zen 4, including the VivoBook — with a trap counter to see whether any path
-is hot enough to also need offline rewriting; GFNI / the lower tier later, only if pre-2021 hardware
-matters. brunch (docs/06) does none of this: it selects a prebuilt image per CPU family and declares
+Plan (implemented): a kernel `#UD` handler (`kmod/patches/vex-emulate.patch`, built from
+`tools/vexemu/generate_traps.py`) emulates the 17 instructions userspace hits on a gap CPU:
+AVX-VNNI `vpdpbusd(s)`/`vpdpwssd(s)`, AVX-IFMA `vpmadd52l/huq`, GFNI
+`gf2p8affine[inv]qb`/`gf2p8mulb`, VPCLMULQDQ (VEX 128/256), and the legacy-encoded SHA-NI
+set (`sha1rnds4/nexte/msg1/msg2`, `sha256rnds2/msg1/msg2`). GFNI and SHA land here because
+`init`'s libcrypto (AES key schedule) and BoringSSL's FIPS module check (HMAC-SHA-256) run
+them unconditionally; `vpclmulqdq` likewise via AES-GCM. Ice/Tiger Lake native-set also lacks
+256-bit PCLMUL. The handler decodes the trapping instruction with the kernel's insn decoder,
+resolves register (incl. VEX R/X/B-extended and ModRM/SIB/RIP-relative memory) operands against
+the task's xstate (YMM handling aware of INIT-state zero upper halves), computes the exact
+semantics (hardware-validated; the saturating VNNI forms saturate the final s32 accumulate,
+confirmed against native silicon), writes back, and advances RIP. Per-opcode ratelimited
+trap counters in dmesg are the hotness gauge for a later offline rewriter. Default on;
+`churro.vexemu=0` in bootconfig restores the plain SIGILL. Dormant on CPUs with the native
+forms (handler only fires on `#UD`).
+Perf note: GFNI also lives in libyuv hot loops (Tier 2, ~271 files) — emulation there is
+correct but slow; a real perf-cost class remains for Haswell → Comet Lake / Zen 1–3.
+Validation: `tools/vextest` (hand-encoded register/SIB/RIP-relative/imm cases vs scalar
+reference, a 512-block chained sha256rnds2-vs-textbook-SHA256 oracle, and
+chained-accumulate/multiprocess streams): all pass natively on the MSI and on a gap QEMU CPU
+(`Icelake-Server` TCG, where TCG genuinely lacks these) fully emulated; `churro.vexemu=0`
+makes the same initramfs die with SIGILL on the first instruction, proving the kill switch.
+Dev-only files (not used by `churro.sh` or the kernel build, which only applies the patch):
+`tools/vexemu/generate_traps.py` rebuilds `tools/vexemu/traps.c`, a readable reference copy
+of the patched `traps.c`, from a pristine `out/traps.c`. Edit the emulator there, regenerate,
+then diff against `out/traps.c` to refresh the patch. `tools/vextest/run.sh build|native|qemu`
+builds and runs the test binary; `diaginit.c` is a tiny initramfs probe that shows which
+output channel (kmsg/ttyS0/console) reaches the QEMU serial log.
+Caveats: (a) QEMU TCG itself miscomputes chained ymm accumulators even without emulation
+(also reproducible with TCG-natively translated `vpmadd52luq`), so TCG full-image boots are
+only used for unit tests, not as a correctness reference; (b) real-device (Tiger Lake)
+validation is one boot sample reaching the setup UI, with GMS/ART dex issue still open —
+see `boot.log` high `vpdpwssd` trap counts; performance on trap-heavy processes is limited.
+brunch (docs/06) does none of this: it selects a prebuilt image per CPU family and declares
 older CPUs unsupported.
 
 ## GPU

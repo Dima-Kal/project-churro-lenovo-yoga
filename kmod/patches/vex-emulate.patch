@@ -1,0 +1,535 @@
+--- a/arch/x86/kernel/traps.c
++++ b/arch/x86/kernel/traps.c
+@@ -24,6 +24,7 @@
+ #include <linux/kernel.h>
+ #include <linux/export.h>
+ #include <linux/ptrace.h>
++#include <linux/moduleparam.h>
+ #include <linux/uprobes.h>
+ #include <linux/string.h>
+ #include <linux/delay.h>
+@@ -61,6 +62,10 @@
+ #include <asm/mach_traps.h>
+ #include <asm/alternative.h>
+ #include <asm/fpu/xstate.h>
++#include <asm/fpu/signal.h>
++#include <asm/fpu/sched.h>
++#include <asm/fpu/api.h>
++#include <asm/thread_info.h>
+ #include <asm/vm86.h>
+ #include <asm/umip.h>
+ #include <asm/insn.h>
+@@ -295,12 +300,513 @@
+ 	do_error_trap(regs, 0, "overflow", X86_TRAP_OF, SIGSEGV, 0, NULL);
+ }
+
++
++/*
++ * Churro: emulate the VEX-encoded AVX-VNNI (vpdpbusd[s], vpdpwssd[s]),
++ * AVX-IFMA (vpmadd52luq/huq), GFNI (gf2p8affine[inv]qb, gf2p8mulb) and the
++ * legacy-encoded SHA-NI instructions (sha1rnds4/nexte/msg1/msg2,
++ * sha256rnds2/msg1/msg2). The Googlebook userspace is built
++ * -march=pantherlake and runs these unconditionally, but "Tier-1 gap" CPUs
++ * lack VNNI/IFMA-VEX (Ice Lake and Zen 4; Alder/Raptor/Meteor Lake) and GFNI,
++ * so core boot binaries (incl. second-stage init) die with SIGILL and the
++ * boot panics. This only runs on #UD, i.e. it is dormant on CPUs with the
++ * native forms. Per-opcode trap counts are logged (ratelimited) as the
++ * hotness gauge for a possible offline rewriter. churro.vexemu=0 in
++ * bootconfig disables it.
++ */
++enum churro_vex_op {
++	CHURRO_VPBUSD, CHURRO_VPBUSDS, CHURRO_VPWSSD, CHURRO_VPWSSDS,
++	CHURRO_VPM52LQ, CHURRO_VPM52HQ,
++	CHURRO_GFAFQ, CHURRO_GFAINVQ, CHURRO_GFMULB,
++	CHURRO_SHA1NEXTE, CHURRO_SHA1MSG1, CHURRO_SHA1MSG2,
++	CHURRO_SHA256RNDS2, CHURRO_SHA256MSG1, CHURRO_SHA256MSG2,
++	CHURRO_SHA1RNDS4,
++	CHURRO_PCLMULQDQ,
++};
++
++static bool churro_vexemu = true;
++module_param(churro_vexemu, bool, 0644);
++MODULE_PARM_DESC(churro_vexemu,
++	"Emulate VEX AVX-VNNI/AVX-IFMA/GFNI/PCLMULQDQ and SHA-NI user instructions on #UD (Tier-1 CPUs)");
++
++static int __init churro_vexemu_setup(char *str)
++{
++	return kstrtobool(str, &churro_vexemu) == 0;
++}
++__setup("churro.vexemu=", churro_vexemu_setup);
++
++static atomic64_t churro_vexemu_count[17];
++static DEFINE_RATELIMIT_STATE(churro_vexemu_rs, DEFAULT_RATELIMIT_INTERVAL,
++			      DEFAULT_RATELIMIT_BURST);
++static const char * const churro_vexemu_names[] = {
++	"vpdpbusd", "vpdpbusds", "vpdpwssd", "vpdpwssds",
++	"vpmadd52luq", "vpmadd52huq",
++	"gf2p8affineqb", "gf2p8affineinvqb", "gf2p8mulb",
++	"sha1nexte", "sha1msg1", "sha1msg2",
++	"sha256rnds2", "sha256msg1", "sha256msg2", "sha1rnds4",
++	"vpclmulqdq",
++};
++
++static inline s32 churro_sat_s32(s64 v)
++{
++	if (v > S32_MAX)
++		return S32_MAX;
++	if (v < S32_MIN)
++		return S32_MIN;
++	return v;
++}
++
++/*
++ * vpdpwssd(s): d = acc + S16(a.lo)*S16(b.lo) + S16(a.hi)*S16(b.hi) per dword.
++ * vpdpbusd(s): d = acc + Z8(a[k])*S8(b[k]) for the 4 bytes of each dword.
++ * The 's' forms saturate the final accumulate (acc + product-sum) to s32.
++ */
++static void churro_vex_vnni(u32 *d, const u32 *acc, const u32 *a, const u32 *b,
++			    int lanes, int op)
++{
++	int i, k;
++
++	for (i = 0; i < lanes; i++) {
++		u32 r = acc[i];
++
++		if (op == CHURRO_VPWSSD || op == CHURRO_VPWSSDS) {
++			const s16 *aw = (const s16 *)&a[i], *bw = (const s16 *)&b[i];
++			s64 p = (s32)aw[0] * bw[0] + (s64)(s32)aw[1] * bw[1];
++
++			if (op == CHURRO_VPWSSDS)
++				r = churro_sat_s32((s64)(s32)r + p);
++			else
++				r += (u32)p;
++		} else {
++			const u8 *ab = (const u8 *)&a[i];
++			const s8 *bb = (const s8 *)&b[i];
++			s64 p = 0;
++
++			for (k = 0; k < 4; k++)
++				p += (s32)ab[k] * bb[k];
++			if (op == CHURRO_VPBUSDS)
++				r = churro_sat_s32((s64)(s32)r + p);
++			else
++				r += (u32)p;
++		}
++		d[i] = r;
++	}
++}
++
++/* vpmadd52l/huq: dst += low/high 52 bits of the 104-bit U52(a) * U52(b) */
++static void churro_vex_madd52(u64 *d, const u64 *acc, const u64 *a,
++			      const u64 *b, int lanes, bool high)
++{
++	const u64 m52 = (1ULL << 52) - 1, m26 = (1ULL << 26) - 1;
++	int i;
++
++	for (i = 0; i < lanes; i++) {
++		u64 x = a[i] & m52, y = b[i] & m52;
++		u64 p0 = (x & m26) * (y & m26);				/* < 2^52 */
++		u64 p1 = (x & m26) * (y >> 26) + (x >> 26) * (y & m26);	/* < 2^53 */
++		u64 p2 = (x >> 26) * (y >> 26);				/* < 2^52 */
++		u64 lo = p0 + ((p1 & m26) << 26);			/* < 2^53 */
++
++		d[i] = acc[i] + (high ? p2 + (p1 >> 26) + (lo >> 52) : (lo & m52));
++	}
++}
++
++/*
++ * GFNI, GF(2^8) with reduction poly x^8+x^4+x^3+x+1 (0x11B):
++ * gf2p8mulb: bytewise multiplication.
++ * gf2p8affine(inv)qb: dst.qword[j].byte[b] = affine_byte(A = SRC2.qword[j],
++ * x = SRC1.qword[j].byte[b] [inverted for the 'inv' form], b-vec = imm8)
++ * where retbyte.bit[i] = parity(A.byte[7-i] AND x) XOR imm8.bit[i].
++ */
++static u8 churro_gf_mul(u8 a, u8 b)
++{
++	u16 w = 0;
++	int i;
++
++	for (i = 0; i < 8; i++)
++		if (b & (1 << i))
++			w ^= (u16)a << i;
++	for (i = 14; i >= 8; i--)
++		if (w & (1 << i))
++			w ^= 0x11b << (i - 8);
++	return w & 0xff;
++}
++
++/* multiplicative inverse in GF(2^8); 0 maps to 0 (SDM table) */
++static u8 churro_gf_inv(u8 x)
++{
++	u8 r = 1, b = x;
++	u8 e = 254;
++
++	if (!x)
++		return 0;
++	while (e) {
++		r = churro_gf_mul(r, b);
++		e--;
++	}
++	return r;
++}
++
++static void churro_vex_gfni(u8 *d, const u8 *a, const u8 *b, int len, int op,
++			    u8 imm)
++{
++	int j, k, i;
++
++	if (op == CHURRO_GFMULB) {
++		for (j = 0; j < len; j++)
++			d[j] = churro_gf_mul(a[j], b[j]);
++		return;
++	}
++	for (j = 0; j < len / 8; j++) {
++		u64 A;
++
++		memcpy(&A, b + 8 * j, 8); /* SRC2 = A */
++		for (k = 0; k < 8; k++) {
++			u8 x = a[8 * j + k]; /* SRC1 */
++			u8 r = 0;
++
++			if (op == CHURRO_GFAINVQ)
++				x = churro_gf_inv(x);
++			for (i = 0; i < 8; i++) {
++				u8 row = (A >> (8 * (7 - i))) & 0xff;
++
++				r ^= (__builtin_parity(row & x) ^ ((imm >> i) & 1)) << i;
++			}
++			d[8 * j + k] = r;
++		}
++	}
++}
++
++/* vpclmulqdq: per 128-bit lane, imm8[0] picks a's qword, imm8[4] b's; 128-bit carryless product */
++static void churro_pclmul_exec(u64 *d, const u64 *a, const u64 *b, int lanes, u8 imm)
++{
++	int i, j;
++
++	for (i = 0; i < lanes; i++) {
++		u64 x = a[2 * i + (imm & 1)];
++		u64 y = b[2 * i + ((imm >> 4) & 1)];
++		u64 lo = 0, hi = 0;
++
++		for (j = 0; j < 64; j++)
++			if ((y >> j) & 1) {
++				lo ^= x << j;
++				if (j)
++					hi ^= x >> (64 - j);
++			}
++		d[2 * i] = lo;
++		d[2 * i + 1] = hi;
++	}
++}
++
++/* --- SHA-NI (legacy NP encoding) --- */
++static u32 churro_ror32(u32 v, int n) { return (v >> n) | (v << (32 - n)); }
++static u32 churro_rol32(u32 v, int n) { return (v << n) | (v >> (32 - n)); }
++static u32 churro_s_sig0(u32 x) { return churro_ror32(x, 7) ^ churro_ror32(x, 18) ^ (x >> 3); }
++static u32 churro_s_sig1(u32 x) { return churro_ror32(x, 17) ^ churro_ror32(x, 19) ^ (x >> 10); }
++static u32 churro_s_big0(u32 x) { return churro_ror32(x, 2) ^ churro_ror32(x, 13) ^ churro_ror32(x, 22); }
++static u32 churro_s_big1(u32 x) { return churro_ror32(x, 6) ^ churro_ror32(x, 11) ^ churro_ror32(x, 25); }
++
++/*
++ * s1 = the destination/source-1 operand content, s2 = the rm operand,
++ * wk = xmm0 (used by sha256rnds2 only). All dword lanes per the SDM order.
++ */
++static void churro_sha_exec(u32 *d, const u32 *s1, const u32 *s2,
++			    const u32 *wk, int op, u8 imm)
++{
++	u32 a, b, c, dd, e, f, g, h, t1, t2, W16, W17, W18, W19;
++	u32 fval, kk;
++	int i;
++
++	switch (op) {
++	case CHURRO_SHA256RNDS2:
++		a = s2[3]; b = s2[2]; c = s1[3]; dd = s1[2];
++		e = s2[1]; f = s2[0]; g = s1[1]; h = s1[0];
++		for (i = 0; i < 2; i++) {
++			t1 = h + churro_s_big1(e) + ((e & f) ^ (~e & g)) + wk[i];
++			t2 = churro_s_big0(a) + ((a & b) ^ (a & c) ^ (b & c));
++			h = g; g = f; f = e; e = t1 + dd;
++			dd = c; c = b; b = a; a = t1 + t2;
++		}
++		d[3] = a; d[2] = b; d[1] = e; d[0] = f;
++		return;
++	case CHURRO_SHA256MSG1:
++		d[3] = s1[3] + churro_s_sig0(s2[0]);
++		d[2] = s1[2] + churro_s_sig0(s1[3]);
++		d[1] = s1[1] + churro_s_sig0(s1[2]);
++		d[0] = s1[0] + churro_s_sig0(s1[1]);
++		return;
++	case CHURRO_SHA256MSG2:
++		W16 = s1[0] + churro_s_sig1(s2[2]);
++		W17 = s1[1] + churro_s_sig1(s2[3]);
++		W18 = s1[2] + churro_s_sig1(W16);
++		W19 = s1[3] + churro_s_sig1(W17);
++		d[3] = W19; d[2] = W18; d[1] = W17; d[0] = W16;
++		return;
++	case CHURRO_SHA1NEXTE:
++		d[3] = s2[3] + churro_rol32(s1[3], 30);
++		d[2] = s2[2]; d[1] = s2[1]; d[0] = s2[0];
++		return;
++	case CHURRO_SHA1MSG1:
++		d[3] = s1[1] ^ s1[3];
++		d[2] = s1[0] ^ s1[2];
++		d[1] = s2[3] ^ s1[1];
++		d[0] = s2[2] ^ s1[0];
++		return;
++	case CHURRO_SHA1MSG2:
++		W16 = churro_rol32(s1[3] ^ s2[2], 1);
++		W17 = churro_rol32(s1[2] ^ s2[1], 1);
++		W18 = churro_rol32(s1[1] ^ s2[0], 1);
++		W19 = churro_rol32(s1[0] ^ W16, 1);
++		d[3] = W16; d[2] = W17; d[1] = W18; d[0] = W19;
++		return;
++	default: /* SHA1RNDS4: 4 rounds, state A..E, f/K selected by imm&3 */
++		switch (imm & 3) {
++		case 0: kk = 0x5a827999; break;
++		case 1: kk = 0x6ed9eba1; break;
++		case 2: kk = 0x8f1bbcdc; break;
++		default: kk = 0xca62c1d6; break;
++		}
++		a = s1[3]; b = s1[2]; c = s1[1]; dd = s1[0]; e = 0;
++		for (i = 0; i < 4; i++) {
++			switch (imm & 3) {
++			case 0:	fval = (b & c) ^ (~b & dd);	break;
++			case 1:	fval = b ^ c ^ dd;		break;
++			case 2:	fval = (b & c) ^ (b & dd) ^ (c & dd);	break;
++			default: fval = b ^ c ^ dd;		break;
++			}
++			fval += churro_rol32(a, 5) + s2[3 - i] + kk;
++			if (i)
++				fval += e;
++			e = dd; dd = c; c = churro_rol32(b, 30); b = a; a = fval;
++		}
++		d[3] = a; d[2] = b; d[1] = c; d[0] = dd;
++		return;
++	}
++}
++
++/*
++ * A vector register lives in the task's xsave image: the low half in the
++ * fxsave XMM area (architecturally fixed offset), the high half in the YMM
++ * xfeature (offset from the kernel's xstate map). XSAVES does not write a
++ * component that is in INIT state, so its area is stale and reads as zero.
++ */
++static void churro_vex_read(const struct xregs_state *xs, int n, u32 *v, bool y)
++{
++	const void *hi;
++
++	if (xs->header.xfeatures & XFEATURE_MASK_SSE)
++		memcpy(v, &xs->i387.xmm_space[4 * n], 16);
++	else
++		memset(v, 0, 16);
++	if (!y)
++		return;
++	hi = xs->header.xfeatures & XFEATURE_MASK_YMM ?
++	     get_xsave_addr((struct xregs_state *)xs, XFEATURE_YMM) : NULL;
++	if (hi)
++		memcpy((u8 *)v + 16, (u8 *)hi + 16 * n, 16);
++	else
++		memset((u8 *)v + 16, 0, 16);
++}
++
++static void churro_vex_write(struct xregs_state *xs, int n, const u32 *v, bool y)
++{
++	void *hi;
++
++	/*
++	 * A write takes the component out of INIT state; its stale area must
++	 * be zeroed first, or XRSTOR would load garbage into the other regs.
++	 */
++	if (!(xs->header.xfeatures & XFEATURE_MASK_SSE)) {
++		memset(xs->i387.xmm_space, 0, sizeof(xs->i387.xmm_space));
++		xs->header.xfeatures |= XFEATURE_MASK_SSE;
++	}
++	memcpy(&xs->i387.xmm_space[4 * n], v, 16);
++	if (y) {
++		if (!(xs->header.xfeatures & XFEATURE_MASK_YMM)) {
++			xs->header.xfeatures |= XFEATURE_MASK_YMM;
++			memset(get_xsave_addr(xs, XFEATURE_YMM), 0, 16 * 16);
++		}
++		hi = get_xsave_addr(xs, XFEATURE_YMM);
++		memcpy((u8 *)hi + 16 * n, (const u8 *)v + 16, 16);
++	} else if (xs->header.xfeatures & XFEATURE_MASK_YMM) {
++		/* a VEX.128 write zeroes the high half */
++		hi = get_xsave_addr(xs, XFEATURE_YMM);
++		memset((u8 *)hi + 16 * n, 0, 16);
++	}
++}
++
++/* returns true when the #UD was a supported VEX VNNI/IFMA/GFNI instruction */
++static bool handle_vex_ud(struct pt_regs *regs)
++{
++	u8 buf[MAX_INSN_SIZE];
++	u32 va[8], vb[8], vd[8], vacc[8];
++	struct insn insn;
++	struct fpu *fpu = x86_task_fpu(current);
++	struct xregs_state *xs;
++	u32 saved_rex;
++	void __user *ea;
++	u8 vex1, vex2, imm = 0;
++	int len, op, y, s1, s2, dst, map;
++
++	if (!churro_vexemu)
++		return false;
++
++	/* no YMM xfeature area to edit on AVX-less machines */
++	if (!boot_cpu_has(X86_FEATURE_AVX))
++		return false;
++
++	len = MAX_INSN_SIZE - copy_from_user(buf, (void __user *)regs->ip,
++					     MAX_INSN_SIZE);
++	if (len < 5 || insn_decode(&insn, buf, len, INSN_MODE_64))
++		return false;
++
++	/* VEX: only 3-byte VEX (0xC4), 66 prefix, map 0F38 or 0F3A */
++	if (insn.vex_prefix.nbytes == 3) {
++		map = insn_vex_m_bits(&insn);
++		if (insn_vex_p_bits(&insn) != 1 || (map != 2 && map != 3))
++			return false;
++		if (map == 2) {
++			switch (insn.opcode.bytes[0]) {
++			case 0x50:	op = CHURRO_VPBUSD;	break;
++			case 0x51:	op = CHURRO_VPBUSDS;	break;
++			case 0x52:	op = CHURRO_VPWSSD;	break;
++			case 0x53:	op = CHURRO_VPWSSDS;	break;
++			case 0xb4:	op = CHURRO_VPM52LQ;	break;
++			case 0xb5:	op = CHURRO_VPM52HQ;	break;
++			case 0xcf:	op = CHURRO_GFMULB;	break; /* VEX.66.0F38.W0 */
++			default:	return false;
++			}
++			/* IFMA has VEX.W=1, VNNI and GF2P8MULB have VEX.W=0 */
++			if ((op == CHURRO_VPM52LQ || op == CHURRO_VPM52HQ) !=
++			    !!insn_vex_w_bit(&insn))
++				return false;
++		} else {
++			/* map 0F3A: GF2P8AFFINEQB = 0xCE, GF2P8AFFINEINVQB = 0xCF
++			 * (both VEX.W=1, imm8); VPCLMULQDQ = 0x44 (VEX.W=0, imm8) */
++			switch (insn.opcode.bytes[0]) {
++			case 0x44:
++				if (insn_vex_w_bit(&insn))
++					return false;
++				op = CHURRO_PCLMULQDQ;
++				break;
++			case 0xce:
++				if (!insn_vex_w_bit(&insn))
++					return false;
++				op = CHURRO_GFAFQ;
++				break;
++			case 0xcf:
++				if (!insn_vex_w_bit(&insn))
++					return false;
++				op = CHURRO_GFAINVQ;
++				break;
++			default:	return false;
++			}
++			imm = insn.immediate.value & 0xff;
++		}
++		vex1 = insn.vex_prefix.bytes[1];	/* ~R ~X ~B mmmmm */
++		vex2 = insn.vex_prefix.bytes[2];	/* W ~vvvv L pp */
++		y = X86_VEX_L(vex2) ? 1 : 0;
++		s1 = ~X86_VEX_V(vex2) & 0xf;
++		dst = X86_MODRM_REG(insn.modrm.value) + (!X86_VEX_R(vex1) ? 8 : 0);
++		s2 = X86_MODRM_RM(insn.modrm.value) + (!X86_VEX_B(vex1) ? 8 : 0);
++	} else {
++		/*
++		 * SHA-NI, legacy NP encodings: 0F 38 C8..CD /r and
++		 * 0F 3A CC /r ib (sha1rnds4). buf[0]==0x0F rules out any
++		 * prefix byte (incl. REX), so register numbers stay < 8.
++		 */
++		if (buf[0] != 0x0f)
++			return false;
++		if (buf[1] == 0x38 && buf[2] >= 0xc8 && buf[2] <= 0xcd) {
++			op = CHURRO_SHA1NEXTE + buf[2] - 0xc8;
++		} else if (buf[1] == 0x3a && buf[2] == 0xcc) {
++			op = CHURRO_SHA1RNDS4;
++			imm = insn.immediate.value & 0xff;
++		} else {
++			return false;
++		}
++		y = 0;
++		dst = X86_MODRM_REG(insn.modrm.value);
++		s2 = X86_MODRM_RM(insn.modrm.value);
++		s1 = 0;		/* sha256rnds2's implicit third operand is xmm0 */
++	}
++
++	if (X86_MODRM_MOD(insn.modrm.value) != 3) {
++		/*
++		 * insn_get_addr_ref() computes ModRM/SIB/disp addresses (incl.
++		 * RIP-relative) but takes extension bits from rex_prefix, which
++		 * the decoder does not synthesize from VEX R/X/B - do it here.
++		 */
++		saved_rex = insn.rex_prefix.value;
++		if (insn.vex_prefix.nbytes == 3)
++			insn.rex_prefix.value = (!X86_VEX_R(vex1) ? 4 : 0) |
++						(!X86_VEX_X(vex1) ? 2 : 0) |
++						(!X86_VEX_B(vex1) ? 1 : 0);
++		ea = insn_get_addr_ref(&insn, regs);
++		insn.rex_prefix.value = saved_rex;
++		if (ea == (void __user *)-1L)
++			return false;
++		if (copy_from_user(vb, ea, y ? 32 : 16))
++			return false; /* real hw would fault #PF, not #UD */
++	}
++
++	fpregs_lock();
++	/*
++	 * Make the registers live first. If we were preempted above, the flag
++	 * is set but the CPU may still hold our state; fpregs_state_valid()
++	 * would then skip the XRSTOR on return to user and drop our edit.
++	 */
++	if (test_thread_flag(TIF_NEED_FPU_LOAD))
++		switch_fpu_return();
++	save_fpregs_to_fpstate(fpu);
++
++	xs = &fpu->fpstate->regs.xsave;
++	churro_vex_read(xs, s1, va, y);
++	churro_vex_read(xs, dst, vacc, y);
++	if (X86_MODRM_MOD(insn.modrm.value) == 3)
++		churro_vex_read(xs, s2, vb, y);
++
++	if (op == CHURRO_PCLMULQDQ)
++		churro_pclmul_exec((u64 *)vd, (const u64 *)va, (const u64 *)vb,
++				   y ? 2 : 1, imm);
++	else if (op >= CHURRO_SHA1NEXTE)
++		churro_sha_exec(vd, vacc, vb, va, op, imm);
++	else if (op >= CHURRO_GFAFQ)
++		churro_vex_gfni((u8 *)vd, (u8 *)va, (u8 *)vb, y ? 32 : 16, op,
++				imm);
++	else if (op >= CHURRO_VPM52LQ)
++		churro_vex_madd52((u64 *)vd, (u64 *)vacc, (u64 *)va, (u64 *)vb,
++				  y ? 4 : 2, op == CHURRO_VPM52HQ);
++	else
++		churro_vex_vnni(vd, vacc, va, vb, y ? 8 : 4, op);
++	churro_vex_write(xs, dst, vd, y);
++
++	restore_fpregs_from_fpstate(fpu->fpstate, XFEATURE_MASK_FPSTATE);
++	fpregs_unlock();
++
++	regs->ip += insn.length;
++	atomic64_inc(&churro_vexemu_count[op]);
++	if (__ratelimit(&churro_vexemu_rs))
++		pr_info("churro-vexemu: %s in %s[%d], trap #%lld\n",
++			churro_vexemu_names[op], current->comm, task_pid_nr(current),
++			atomic64_read(&churro_vexemu_count[op]));
++	return true;
++}
++
+ #ifdef CONFIG_X86_F00F_BUG
+ void handle_invalid_op(struct pt_regs *regs)
+ #else
+ static inline void handle_invalid_op(struct pt_regs *regs)
+ #endif
+ {
++	if (user_mode(regs)) {
++		cond_local_irq_enable(regs);
++		if (handle_vex_ud(regs)) {
++			cond_local_irq_disable(regs);
++			return;
++		}
++		cond_local_irq_disable(regs);
++	}
+ 	do_error_trap(regs, 0, "invalid opcode", X86_TRAP_UD, SIGILL,
+ 		      ILL_ILLOPN, error_get_trap_addr(regs));
+ }
