@@ -107,7 +107,7 @@ an Intel iGPU at 00:02.0 (hybrid laptops included) → `native`; else an NVIDIA 
 | Area | Today | Next |
 |---|---|---|
 | Storage | NVMe/USB built in; `storage` pack: AHCI, eMMC (sdhci-pci/acpi) | — |
-| Intel Wi-Fi / BT | image's iwlwifi/btintel + `firmware-extra` (modinfo-declared names + `extra.txt` for Bluetooth) | verify on MSI (`iwlwifi-so-a0-gf-a0-89`, `ibt-1040-0041`) |
+| Intel Wi-Fi / BT | image's iwlwifi/btintel + `firmware-extra` (modinfo-declared names + `extra.txt` for Bluetooth) | MSI (AX211, `so-a0-gf-a0-89`) works. VivoBook 15 (AX201, Qu): Google's iwlmvm unmaps RX buffers the IOMMU never mapped (WARN storm, firmware crashes, downloads stall) → `churro.sh` always sets `iommu.passthrough=1`; Bluetooth `ibt-1040-0041` unverified |
 | Other Wi-Fi / BT | distro module set: ath9k/10k/11k/12k, rtw88/89, rtl8xxxu, mt76, brcm, … + their firmware + regulatory.db; they link against the image's cfg80211/mac80211 (CRCs match ours, so the ABI check accepts them) | verify on hardware; the opt-in `wifi` pack is probably obsolete |
 | Ethernet, USB devices, card readers, touchpads/touchscreens, sensors, HID | distro module set (`drivers-extra`, ~3000 modules, loaded by device alias) | test on more machines |
 | Audio | HDA + SOF from the image + distro codec/amp drivers; SOF firmware/topologies (sof-bin, merged per file), amp tunings via WHENCE; `audio-generic`: board audio cmdline/blocklist/options removed, codec drivers preloaded, HAL config for HD-audio cards (`PCH`, `Generic*`, `Intel`, `sofhdadsp`) bind-mounted over Google's board config, card renamed to the board's ID; works in QEMU (playback reaches the backend) | verify on MSI (speaker, headphones, mic, HDMI). Not covered: see "Known gaps" below |
@@ -132,6 +132,16 @@ setup in `mixer_paths.xml` (the controls these codecs need to route sound, which
 | HDMI audio on a separate GPU card | hybrid laptops with HDMI wired to the dGPU (MSI), desktops with discrete GPUs | the HAL only uses the one internal card; HDMI on another card (`NVidia`, `HDMI`) would need a second card in the HAL or the external-device path |
 | Unverified on SOF | — | internal mic PCM 6 and HDMI PCM 3–5 for `sofhdadsp` are from the standard topology, not tested; headphone/speaker switching relies on the kernel's auto-mute (Android shows no headphone state) |
 
+**IOMMU passthrough (applied, all entries).** Google's cmdline keeps the IOMMU translating every
+device except the iGPU (`intel_iommu=igfx_off`), which their pKVM setup needs and Churro doesn't
+use (`pkvm=0`). On the VivoBook's AX201 their iwlmvm unmaps receive buffers that have no IOMMU
+mapping (`iommu_dma_unmap_phys` WARN per affected packet), and the card's firmware crashes
+repeatedly, so `churro.sh` adds `iommu.passthrough=1`: internal devices DMA untranslated, as on
+most Linux installs; ports the firmware marks external (Thunderbolt/USB4) keep a translated
+domain; no-op without an IOMMU; works on AMD. Trade-off: no DMA isolation of internal devices,
+and the driver bug is hidden, not fixed. Narrower option if ever wanted: a kernel quirk giving
+only Intel Wi-Fi an identity domain (the `igfx_off` mechanism), no kABI impact.
+
 **Display colour (applied).** Google's composer defaults are tuned for the Lenovo panel: the image
 sets `vendor.hwc.drm.force_color_mode=13` and `persistent_hdr=true` (+ the composer's log-gamma
 LUT). The MSI's panel showed a colour cast, as GBRUNCH (docs/06) saw on theirs, so `gfx-mesa` now
@@ -145,6 +155,7 @@ three lines in `features/gfx-mesa/patch-vendor.sh` are the knob.
 |---|---|---|
 | QEMU/KVM | host / virtio | boots to system_server; SurfaceFlinger crashes in softpipe (QEMU 2D virtio-gpu) |
 | Asus T300FA | Core M-5Y10 / HD 5300 | not bootable (CPU floor) |
+| Asus VivoBook 15 (X513EA) | i7-1165G7 Tiger Lake / Iris Xe | boots with the `#UD` emulator (slow: `vpdpwssd` traps); setup wizard Wi-Fi stalls fixed by IOMMU passthrough |
 | HP AiO | older Intel | `init` invalid opcode (CPU floor) |
 | MSI (Core Ultra 7 255HX) | Arrow Lake / RTX 50 (10de:2f18) | hybrid mode: boots and runs (xe + our allocator); discrete (MUX) mode: works on nouveau/NVK (panel, HDMI, Chrome); distro driver set: touchpad works; audio works (audio-generic + churro-mixer); colour cast → SDR props (gfx-mesa) |
 

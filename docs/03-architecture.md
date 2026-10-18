@@ -123,7 +123,9 @@ files get a sibling's label or an explicit one.
   the SPI flash drivers (`spi_intel`, `spi_intel_pci`) and the TPM drivers (`tpm`, `tpm_tis*`,
   `tpm_crb`): the image's `gscutil` and `check_tpm_clear` send Google-security-chip commands to
   `/dev/tpm0` at every boot, and on a PC that is the TPM Windows/BitLocker depends on. It also
-  adds `efi_pstore.pstore_disable=1` (no kernel crash dumps into the PC's UEFI NVRAM), and the
+  adds `efi_pstore.pstore_disable=1` (no kernel crash dumps into the PC's UEFI NVRAM) and
+  `iommu.passthrough=1` (not a lockdown: Google's iwlmvm Wi-Fi driver breaks on a translating IOMMU,
+  docs/05 "Other hardware"; firmware-marked external ports stay translated), and the
   feature strips board tuning from the vendor rc files (`init.ruby.rc` writes the Lenovo
   laptop's RAPL power limits and a TCC offset to whatever CPU it runs on).
   There is deliberately no switch to turn any of this back on.

@@ -182,6 +182,10 @@ EOF
   # - no crash dumps into UEFI NVRAM: the GKI kernel registers efi_pstore, which writes the kernel
   #   log into EFI variables on every panic (and the debug entries turn init crashes into panics).
   #   Filling a PC's NVRAM can make its firmware unbootable.
+  # - IOMMU passthrough for internal devices: Google's iwlmvm (the Wi-Fi driver for AX201/Qu-class
+  #   cards; Googlebooks use iwlmld) unmaps RX buffers the IOMMU never mapped -> a WARN per packet,
+  #   firmware crashes, Wi-Fi stalls (VivoBook 15, docs/02). Distro-normal; ports the firmware marks
+  #   external (Thunderbolt/USB4) stay translated, the iGPU already was (igfx_off), pKVM is off.
   # module_blacklist is a single kernel parameter (the last one wins), so extend the vendor's.
   local vcmd blk=spi_intel,spi_intel_pci,tpm,tpm_tis,tpm_tis_core,tpm_crb,tpm_tis_spi,tpm_tis_i2c_cr50
   [ "$CHURRO_NPU" = true ] || blk="$blk,intel_vpu"
@@ -194,8 +198,8 @@ EOF
     *module_blacklist=*) vcmd=$(printf '%s' "$vcmd" | sed -E "s/module_blacklist=([^ ]*)/module_blacklist=\1,$blk/") ;;
     *) vcmd="$vcmd module_blacklist=$blk" ;;
   esac
-  vcmd="$vcmd efi_pstore.pstore_disable=1"
-  log "kernel cmdline: flash read-only, no TPM, no UEFI crash dumps, blacklisted: $blk"
+  vcmd="$vcmd efi_pstore.pstore_disable=1 iommu.passthrough=1"
+  log "kernel cmdline: flash read-only, no TPM, no UEFI crash dumps, IOMMU passthrough, blacklisted: $blk"
 
   log "populating EFI-SYSTEM"
   esp_build "$(part EFI-SYSTEM)" "$W" "$vcmd" "$bsrc"
