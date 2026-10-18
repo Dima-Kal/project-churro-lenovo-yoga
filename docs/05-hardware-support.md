@@ -48,16 +48,19 @@ second-stage `init` → panic.
 | Arrow/Lunar/Panther Lake, AMD Zen 5 | nothing | boots as-is (the MSI) |
 | Ice/Tiger/Rocket Lake, AMD Zen 4 | AVX-VNNI VEX + AVX-IFMA VEX (Zen 4: none) + SHA-NI (Ice/Tiger) | emulated in-kernel on `#UD` |
 | Alder/Raptor/Meteor Lake | AVX-IFMA VEX only (they have AVX-VNNI) | emulated (only the 2 IFMA ops trap) |
-| Haswell → Comet Lake, Zen 1–3 | + GFNI (+ SHA/CLMUL if used by crypto paths) | all 17 emulated; GFNI sits in hot loops (libyuv) → real perf cost |
+| Haswell → Comet Lake, Zen 1–3 | + GFNI, SHA-NI, 256-bit VAES/VPCLMULQDQ (BoringSSL, compile-time on) | all 21 emulated; GFNI sits in hot loops (libyuv), VAES in AES-GCM → real perf cost |
 | pre-Haswell; Atom without AVX | AVX2/BMI2, everywhere | not feasible |
 
 Plan (implemented): a kernel `#UD` handler (`kmod/patches/vex-emulate.patch`, built from
-`tools/vexemu/generate_traps.py`) emulates the 17 instructions userspace hits on a gap CPU:
+`tools/vexemu/generate_traps.py`) emulates the 21 instructions userspace hits on a gap CPU:
 AVX-VNNI `vpdpbusd(s)`/`vpdpwssd(s)`, AVX-IFMA `vpmadd52l/huq`, GFNI
-`gf2p8affine[inv]qb`/`gf2p8mulb`, VPCLMULQDQ (VEX 128/256), and the legacy-encoded SHA-NI
-set (`sha1rnds4/nexte/msg1/msg2`, `sha256rnds2/msg1/msg2`). GFNI and SHA land here because
+`gf2p8affine[inv]qb`/`gf2p8mulb`, VPCLMULQDQ (VEX 128/256), 256-bit VAES
+(`vaesenc/enclast/dec/declast` ymm), and the legacy-encoded SHA-NI set
+(`sha1rnds4/nexte/msg1/msg2`, `sha256rnds2/msg1/msg2`). GFNI and SHA land here because
 `init`'s libcrypto (AES key schedule) and BoringSSL's FIPS module check (HMAC-SHA-256) run
-them unconditionally; `vpclmulqdq` likewise via AES-GCM. Ice/Tiger Lake native-set also lacks
+them unconditionally; `vpclmulqdq` likewise via AES-GCM, and `vaesenc ymm` via the FIPS
+self-test (`libcrypto.so` from second-stage `init`: SIGILL right after first stage on the
+T300FA's Broadwell; Tiger Lake has VAES natively, so it never showed there). Ice/Tiger Lake native-set also lacks
 256-bit PCLMUL. The handler decodes the trapping instruction with the kernel's insn decoder,
 resolves register (incl. VEX R/X/B-extended and ModRM/SIB/RIP-relative memory) operands against
 the task's xstate (YMM handling aware of INIT-state zero upper halves), computes the exact

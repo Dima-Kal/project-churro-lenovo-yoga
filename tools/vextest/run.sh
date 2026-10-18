@@ -4,7 +4,7 @@
 #   tools/vextest/run.sh native         run on this machine native-only (ground truth check)
 #   tools/vextest/run.sh qemu <bzImage> [emulator-mode]
 #       boot a bare initramfs on <bzImage> under TCG with a gap CPU; modes:
-#       emu  = "-cpu max,-avx-vnni,-avx-ifma churro.vexemu=1":  all 17 cases emulated -> PASS
+#       emu  = "-cpu max,-avx-vnni,-avx-ifma,-vaes churro.vexemu=1":  emulated cases -> PASS
 #       off  = same CPU + "churro.vexemu=0":                      init must die with SIGILL
 #       max  = "-cpu max" (TCG's native mix; VNNI emulated or native depending on QEMU)
 set -euo pipefail
@@ -19,8 +19,9 @@ do_build() {
   # verify the hand-encoded bytes disassemble to the intended instructions
   objdump -d "$B" >"$T/vextest.dis"
   for want in vpdpbusd vpdpbusds vpdpwssd vpdpwssds vpmadd52luq vpmadd52huq \
-              vgf2p8affineqb vgf2p8affineinvqb vgf2p8mulb vpclmulqdq \
-              sha256rnds2 sha256msg1 sha256msg2 sha1nexte sha1msg1 sha1msg2 sha1rnds4; do
+              vgf2p8affineqb vgf2p8affineinvqb vgf2p8mulb vpclmul \
+              sha256rnds2 sha256msg1 sha256msg2 sha1nexte sha1msg1 sha1msg2 sha1rnds4 \
+              vaesenc vaesenclast vaesdec vaesdeclast; do
     grep -q "$want" "$T/vextest.dis" && echo "  disasm ok: $want" || { echo "  DISASM MISSING: $want"; exit 1; }
   done
   grep -aE 'vpdp|vpmadd' "$T/vextest.dis" | sort -u | sed 's/^/  /' | head -24
@@ -33,8 +34,8 @@ qemu)
   [ -x "$B" ] || do_build
   BZ=$2; MODE=${3:-emu}
   case $MODE in
-    emu) CPU='max,-avx-vnni,-avx-ifma'; EX='churro.vexemu=1' ;;
-    off) CPU='max,-avx-vnni,-avx-ifma'; EX='churro.vexemu=0' ;;
+    emu) CPU='max,-avx-vnni,-avx-ifma,-vaes'; EX='churro.vexemu=1' ;;
+    off) CPU='max,-avx-vnni,-avx-ifma,-vaes'; EX='churro.vexemu=0' ;;
     max) CPU='max'; EX='churro.vexemu=1' ;;
     *) echo "unknown mode $MODE" >&2; exit 1 ;;
   esac

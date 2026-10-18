@@ -203,6 +203,12 @@ PCMSTUB(pc_256_i11, 0x75, 0x11)
 PCMSTUB(pc_256_i01, 0x75, 0x01)
 PCMSTUB(pc_256_i10, 0x75, 0x10)
 
+// VAES (VEX.256.66.0F38.WIG DC..DF): ymm0 = round(state = ymm1, key = ymm2)
+REGSTUB(vaesenc_256_reg, 0x75, 0xdc)
+REGSTUB(vaesenclast_256_reg, 0x75, 0xdd)
+REGSTUB(vaesdec_256_reg, 0x75, 0xde)
+REGSTUB(vaesdeclast_256_reg, 0x75, 0xdf)
+
 // wssd_chain_256(out=rdi, a=rsi, b=rdx, acc=rcx, rounds=r8)
 // acc ymm0 chained: acc = vpdpwssd(acc, a[i & 63], b[i & 63]) for i in 0..rounds-1.
 // vpdpwssd ymm0, ymm3, ymm4  =  c4 e2 65 52 c4  (vvvv=3 -> Vy=3, rm=4)

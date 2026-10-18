@@ -34,9 +34,11 @@ block = r'''
  * Churro: emulate the VEX-encoded AVX-VNNI (vpdpbusd[s], vpdpwssd[s]),
  * AVX-IFMA (vpmadd52luq/huq), GFNI (gf2p8affine[inv]qb, gf2p8mulb) and the
  * legacy-encoded SHA-NI instructions (sha1rnds4/nexte/msg1/msg2,
- * sha256rnds2/msg1/msg2). The Googlebook userspace is built
- * -march=pantherlake and runs these unconditionally, but "Tier-1 gap" CPUs
- * lack VNNI/IFMA-VEX (Ice Lake and Zen 4; Alder/Raptor/Meteor Lake) and GFNI,
+ * sha256rnds2/msg1/msg2), VPCLMULQDQ and 256-bit VAES (vaesenc/enclast/dec/
+ * declast ymm). The Googlebook userspace is built -march=pantherlake and runs
+ * these unconditionally, but "Tier-1 gap" CPUs lack VNNI/IFMA-VEX (Ice Lake and
+ * Zen 4; Alder/Raptor/Meteor Lake) and older ones also GFNI, SHA-NI and VAES
+ * (Haswell..Comet Lake: BoringSSL's FIPS self-test in init runs vaesenc ymm),
  * so core boot binaries (incl. second-stage init) die with SIGILL and the
  * boot panics. This only runs on #UD, i.e. it is dormant on CPUs with the
  * native forms. Per-opcode trap counts are logged (ratelimited) as the
@@ -51,12 +53,14 @@ enum churro_vex_op {
 	CHURRO_SHA256RNDS2, CHURRO_SHA256MSG1, CHURRO_SHA256MSG2,
 	CHURRO_SHA1RNDS4,
 	CHURRO_PCLMULQDQ,
+	CHURRO_VAESENC, CHURRO_VAESENCLAST, CHURRO_VAESDEC, CHURRO_VAESDECLAST,
+	CHURRO_NR_OPS
 };
 
 static bool churro_vexemu = true;
 module_param(churro_vexemu, bool, 0644);
 MODULE_PARM_DESC(churro_vexemu,
-	"Emulate VEX AVX-VNNI/AVX-IFMA/GFNI/PCLMULQDQ and SHA-NI user instructions on #UD (Tier-1 CPUs)");
+	"Emulate VEX AVX-VNNI/AVX-IFMA/GFNI/PCLMULQDQ/VAES and SHA-NI user instructions on #UD (gap CPUs)");
 
 static int __init churro_vexemu_setup(char *str)
 {
@@ -64,7 +68,7 @@ static int __init churro_vexemu_setup(char *str)
 }
 __setup("churro.vexemu=", churro_vexemu_setup);
 
-static atomic64_t churro_vexemu_count[17];
+static atomic64_t churro_vexemu_count[CHURRO_NR_OPS];
 static DEFINE_RATELIMIT_STATE(churro_vexemu_rs, DEFAULT_RATELIMIT_INTERVAL,
 			      DEFAULT_RATELIMIT_BURST);
 static const char * const churro_vexemu_names[] = {
@@ -74,6 +78,7 @@ static const char * const churro_vexemu_names[] = {
 	"sha1nexte", "sha1msg1", "sha1msg2",
 	"sha256rnds2", "sha256msg1", "sha256msg2", "sha1rnds4",
 	"vpclmulqdq",
+	"vaesenc", "vaesenclast", "vaesdec", "vaesdeclast",
 };
 
 static inline s32 churro_sat_s32(s64 v)
@@ -227,6 +232,61 @@ static void churro_pclmul_exec(u64 *d, const u64 *a, const u64 *b, int lanes, u8
 	}
 }
 
+/*
+ * VAES: one AES round per 128-bit lane, state = SRC1 (vvvv), round key = SRC2.
+ * Byte r + 4c is row r, column c (FIPS-197 order). enc: ShiftRows, SubBytes,
+ * MixColumns, AddRoundKey; dec: the Inv* forms (Intel's equivalent inverse
+ * cipher); the 'last' forms skip (Inv)MixColumns. The S-boxes are built at boot
+ * from the GF(2^8) inverse + affine map.
+ */
+static u8 churro_aes_sbox[256] __ro_after_init;
+static u8 churro_aes_isbox[256] __ro_after_init;
+
+static int __init churro_aes_init(void)
+{
+	int x, i;
+
+	for (x = 0; x < 256; x++) {
+		u8 b = churro_gf_inv(x), s = b ^ 0x63;
+
+		for (i = 1; i < 5; i++)
+			s ^= (u8)(b << i | b >> (8 - i));
+		churro_aes_sbox[x] = s;
+		churro_aes_isbox[s] = x;
+	}
+	return 0;
+}
+core_initcall(churro_aes_init);
+
+/* ponytail: churro_gf_mul per MixColumns byte; xtime tables if vaesenc ever dominates the trap cost */
+static void churro_vex_aes(u8 *d, const u8 *st, const u8 *key, int lanes, int op)
+{
+	static const u8 mix[2][4] = { { 2, 3, 1, 1 }, { 14, 11, 13, 9 } };
+	bool dec = op == CHURRO_VAESDEC || op == CHURRO_VAESDECLAST;
+	bool last = op == CHURRO_VAESENCLAST || op == CHURRO_VAESDECLAST;
+	int l, c, r, k;
+
+	for (l = 0; l < lanes; l++, d += 16, st += 16, key += 16) {
+		u8 t[16];
+
+		for (c = 0; c < 4; c++)
+			for (r = 0; r < 4; r++) {
+				u8 v = st[r + 4 * ((dec ? c - r + 4 : c + r) % 4)];
+
+				t[r + 4 * c] = dec ? churro_aes_isbox[v] : churro_aes_sbox[v];
+			}
+		for (c = 0; c < 4; c++)
+			for (r = 0; r < 4; r++) {
+				u8 v = t[r + 4 * c];
+
+				if (!last)
+					for (v = 0, k = 0; k < 4; k++)
+						v ^= churro_gf_mul(mix[dec][(k - r) & 3], t[k + 4 * c]);
+				d[r + 4 * c] = v ^ key[r + 4 * c];
+			}
+	}
+}
+
 /* --- SHA-NI (legacy NP encoding) --- */
 static u32 churro_ror32(u32 v, int n) { return (v >> n) | (v << (32 - n)); }
 static u32 churro_rol32(u32 v, int n) { return (v << n) | (v >> (32 - n)); }
@@ -364,7 +424,7 @@ static void churro_vex_write(struct xregs_state *xs, int n, const u32 *v, bool y
 	}
 }
 
-/* returns true when the #UD was a supported VEX VNNI/IFMA/GFNI instruction */
+/* returns true when the #UD was one of the emulated instructions (see top) */
 static bool handle_vex_ud(struct pt_regs *regs)
 {
 	u8 buf[MAX_INSN_SIZE];
@@ -403,10 +463,15 @@ static bool handle_vex_ud(struct pt_regs *regs)
 			case 0xb4:	op = CHURRO_VPM52LQ;	break;
 			case 0xb5:	op = CHURRO_VPM52HQ;	break;
 			case 0xcf:	op = CHURRO_GFMULB;	break; /* VEX.66.0F38.W0 */
+			case 0xdc:	op = CHURRO_VAESENC;	break; /* VEX.66.0F38.WIG */
+			case 0xdd:	op = CHURRO_VAESENCLAST; break;
+			case 0xde:	op = CHURRO_VAESDEC;	break;
+			case 0xdf:	op = CHURRO_VAESDECLAST; break;
 			default:	return false;
 			}
-			/* IFMA has VEX.W=1, VNNI and GF2P8MULB have VEX.W=0 */
-			if ((op == CHURRO_VPM52LQ || op == CHURRO_VPM52HQ) !=
+			/* IFMA has VEX.W=1, VNNI and GF2P8MULB have VEX.W=0, VAES ignores W */
+			if (op < CHURRO_VAESENC &&
+			    (op == CHURRO_VPM52LQ || op == CHURRO_VPM52HQ) !=
 			    !!insn_vex_w_bit(&insn))
 				return false;
 		} else {
@@ -495,7 +560,9 @@ static bool handle_vex_ud(struct pt_regs *regs)
 	if (X86_MODRM_MOD(insn.modrm.value) == 3)
 		churro_vex_read(xs, s2, vb, y);
 
-	if (op == CHURRO_PCLMULQDQ)
+	if (op >= CHURRO_VAESENC)
+		churro_vex_aes((u8 *)vd, (u8 *)va, (u8 *)vb, y ? 2 : 1, op);
+	else if (op == CHURRO_PCLMULQDQ)
 		churro_pclmul_exec((u64 *)vd, (const u64 *)va, (const u64 *)vb,
 				   y ? 2 : 1, imm);
 	else if (op >= CHURRO_SHA1NEXTE)

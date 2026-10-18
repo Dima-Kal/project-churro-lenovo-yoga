@@ -53,6 +53,10 @@ extern void pc_256_i00(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void pc_256_i11(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void pc_256_i01(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void pc_256_i10(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
+extern void vaesenc_256_reg(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
+extern void vaesenclast_256_reg(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
+extern void vaesdec_256_reg(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
+extern void vaesdeclast_256_reg(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void wssd_chain_256(u32 *out, const u32 *a, const u32 *b, const u32 *acc, unsigned long rounds);
 extern void wssd_chain_256r1(u32 *out, const u32 *a, const u32 *b, const u32 *acc, unsigned long rounds);
 extern void xavg_chain_256(u32 *out, const u32 *a, const u32 *b, const u32 *acc, unsigned long rounds);
@@ -103,11 +107,11 @@ static void cpuid71(u32 *eax, u32 *edx) {
 	__asm__ volatile("cpuid" : "+a"(a), "=b"(bx), "+c"(c), "=d"(dx) : : "memory");
 	*eax = a; *edx = dx;
 }
-// cpuid leaf 7 subleaf 0: ECX bit 8 = GFNI, EBX bit 29 = SHA-NI
+// cpuid leaf 7 subleaf 0: ECX bit 8 = GFNI, bit 9 = VAES, bit 10 = VPCLMULQDQ; EBX bit 29 = SHA-NI
 static u32 cpuid70_ecx(void) {
-	u32 a = 7, c = 0, bx, cx, dx;
+	u32 a = 7, c = 0, bx, dx;
 	__asm__ volatile("cpuid" : "+a"(a), "=b"(bx), "+c"(c), "=d"(dx) : : "memory");
-	return cx;
+	return c;	// ECX comes back in c
 }
 static u32 cpuid70_ebx(void) {
 	u32 a = 7, c = 0, bx, cx, dx;
@@ -273,6 +277,40 @@ static void ref_pcm_i11(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int 
 static void ref_pcm_i01(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int lanes) { ref_pcm(d, acc, a, b, lanes, 0x01); }
 static void ref_pcm_i10(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int lanes) { ref_pcm(d, acc, a, b, lanes, 0x10); }
 
+// VAES reference: one AES round per 128-bit lane, state = a (vvvv), key = b; byte r+4c = row r, col c
+static unsigned aes_sub(unsigned x, int inv) {
+	if (inv) {	// invert the forward S-box by search: slow but obviously right
+		for (unsigned y = 0; y < 256; y++) if (aes_sub(y, 0) == x) return y;
+	}
+	unsigned b = gfinv8(x), s = b ^ 0x63;
+	for (int i = 1; i < 5; i++) s ^= ((b << i) | (b >> (8 - i))) & 255;
+	return s;
+}
+static void ref_aes(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int lanes, int dec, int last) {
+	static const unsigned m[2][4] = { { 2, 3, 1, 1 }, { 14, 11, 13, 9 } };
+	const unsigned char *S = (const unsigned char *)a, *K = (const unsigned char *)b;
+	unsigned char *D = (unsigned char *)d;
+	for (int l = 0; l < lanes / 4; l++, S += 16, K += 16, D += 16) {
+		unsigned char t[16];
+		for (int c = 0; c < 4; c++)
+			for (int r = 0; r < 4; r++)
+				t[r + 4 * c] = (unsigned char)aes_sub(S[r + 4 * ((dec ? c - r + 4 : c + r) % 4)], dec);
+		for (int c = 0; c < 4; c++)
+			for (int r = 0; r < 4; r++) {
+				unsigned v = t[r + 4 * c];
+				if (!last) {
+					v = 0;
+					for (int k = 0; k < 4; k++) v ^= gfmul8(m[dec][(k - r) & 3], t[k + 4 * c]);
+				}
+				D[r + 4 * c] = (unsigned char)(v ^ K[r + 4 * c]);
+			}
+	}
+}
+static void ref_aesenc(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int lanes) { ref_aes(d, acc, a, b, lanes, 0, 0); }
+static void ref_aesenclast(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int lanes) { ref_aes(d, acc, a, b, lanes, 0, 1); }
+static void ref_aesdec(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int lanes) { ref_aes(d, acc, a, b, lanes, 1, 0); }
+static void ref_aesdeclast(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int lanes) { ref_aes(d, acc, a, b, lanes, 1, 1); }
+
 // ------- drivers -------
 typedef void (*stub_t)(u32 *, const u32 *, const u32 *, const u32 *);
 typedef void (*ref_t)(u32 *, const u32 *, const u32 *, const u32 *, int);
@@ -281,7 +319,7 @@ struct tc {
 	const char *name; // "vpdpwssd/256/reg"
 	stub_t stub;
 	ref_t ref;
-	char native_flag;   // 'v' = AVX-VNNI, 'i' = AVX-IFMA, 'g' = GFNI, 's' = SHA
+	char native_flag;   // 'v' = AVX-VNNI, 'i' = AVX-IFMA, 'g' = GFNI, 's' = SHA, 'p' = VPCLMULQDQ, 'a' = VAES
 };
 
 static const struct tc tests[] = {
@@ -328,6 +366,11 @@ static const struct tc tests[] = {
 	{ "vpclmulqdq/256/i11", pc_256_i11, ref_pcm_i11, 'p' },
 	{ "vpclmulqdq/256/i01", pc_256_i01, ref_pcm_i01, 'p' },
 	{ "vpclmulqdq/256/i10", pc_256_i10, ref_pcm_i10, 'p' },
+	// VAES 256: state = a (vvvv), round key = b
+	{ "vaesenc/256/reg", vaesenc_256_reg, ref_aesenc, 'a' },
+	{ "vaesenclast/256/reg", vaesenclast_256_reg, ref_aesenclast, 'a' },
+	{ "vaesdec/256/reg", vaesdec_256_reg, ref_aesdec, 'a' },
+	{ "vaesdeclast/256/reg", vaesdeclast_256_reg, ref_aesdeclast, 'a' },
 };
 
 // vector presets: cover sign edges, saturation, u8*s8 extremes, >52-bit masks
@@ -704,10 +747,11 @@ void cstart(long *sp) {
 	int have_gfni = (cpuid70_ecx() & 0x100) != 0;
 	int have_sha = (cpuid70_ebx() & 0x20000000) != 0;
 	int have_pcl = (cpuid70_ecx() & 0x400) != 0;
+	int have_vaes = (cpuid70_ecx() & 0x200) != 0;
 	int pass = 0, total = 0;
 
 	say("VEXTEST cpuid avx_vnni="); sayd(have_vnni); say(" avx_ifma="); sayd(have_ifma);
-	say(" gfni="); sayd(have_gfni); say(" sha="); sayd(have_sha); say(" pclmul="); sayd(have_pcl);
+	say(" gfni="); sayd(have_gfni); say(" sha="); sayd(have_sha); say(" pclmul="); sayd(have_pcl); say(" vaes="); sayd(have_vaes);
 	say(native_only ? " (native-only)\n" : "\n");
 	lpos = 0;
 	for (unsigned t = 0; t < sizeof(tests) / sizeof(tests[0]); t++) {
@@ -723,7 +767,8 @@ void cstart(long *sp) {
 			int nat0 = tests[t].native_flag == 'v' ? have_vnni :
 				   tests[t].native_flag == 'i' ? have_ifma :
 				   tests[t].native_flag == 'g' ? have_gfni :
-				   tests[t].native_flag == 'p' ? have_pcl : have_sha;
+				   tests[t].native_flag == 'p' ? have_pcl :
+				   tests[t].native_flag == 'a' ? have_vaes : have_sha;
 			if (native_only && !nat0) { pass++; continue; }
 			fill(p);
 			tests[t].stub(out, vec_a, vec_b, vec_acc);
@@ -738,7 +783,8 @@ void cstart(long *sp) {
 			int nat = tests[t].native_flag == 'v' ? have_vnni :
 				  tests[t].native_flag == 'i' ? have_ifma :
 				  tests[t].native_flag == 'g' ? have_gfni :
-				  tests[t].native_flag == 'p' ? have_pcl : have_sha;
+				  tests[t].native_flag == 'p' ? have_pcl :
+				   tests[t].native_flag == 'a' ? have_vaes : have_sha;
 			if (ok) pass++;
 			say("VEXTEST "); say(wname); say(p == 2 ? "<mask52>" : ""); say(nat ? " native " : " emu ");
 			say(ok ? "ok\n" : "FAIL ");

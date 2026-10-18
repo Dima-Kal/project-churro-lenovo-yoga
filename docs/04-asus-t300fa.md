@@ -48,6 +48,9 @@ switches the ESP to `boot_source=internal`.
 
 > **Update:** the T300FA's Core M (Broadwell) lacks GFNI/AVX-VNNI, which Googlebook userspace
 > uses from the very first program (`init`), so it cannot boot this image (see 02, "Older CPUs").
+> With the `#UD` emulator it now gets through first-stage `init`; the next stop was `vaesenc ymm`
+> in `libcrypto.so` (BoringSSL FIPS self-test, SIGILL in second-stage `init`), which is now
+> emulated too (docs/05). Not yet re-tested on the device.
 
 ## What to report back
 
