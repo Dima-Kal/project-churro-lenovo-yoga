@@ -102,12 +102,12 @@ setup in `mixer_paths.xml` (the controls these codecs need to route sound, which
 | HDMI audio on a separate GPU card | hybrid laptops with HDMI wired to the dGPU (MSI), desktops with discrete GPUs | the HAL only uses the one internal card; HDMI on another card (`NVidia`, `HDMI`) would need a second card in the HAL or the external-device path |
 | Unverified on SOF | — | internal mic PCM 6 and HDMI PCM 3–5 for `sofhdadsp` are from the standard topology, not tested; headphone/speaker switching relies on the kernel's auto-mute (Android shows no headphone state) |
 
-**Display colour.** Google's composer defaults are tuned for the Lenovo panel: BT.2020 colour
-mode, HDR, log-gamma LUT. GBRUNCH (docs/06) saw washed-out colours on their machine and forces
-SDR: `vendor.hwc.drm.force_color_mode=7`, `vendor.hwc.drm.persistent_hdr=false`,
-`vendor.hwc.drm.use_log_gamma_lut=false` (build.prop, same place `gfx-mesa` edits). Not applied
-yet on purpose: only if colours look washed out on the MSI (compare with Windows on the same
-panel); then add the three lines in `features/gfx-mesa/patch-vendor.sh`.
+**Display colour (applied).** Google's composer defaults are tuned for the Lenovo panel: the image
+sets `vendor.hwc.drm.force_color_mode=13` and `persistent_hdr=true` (+ the composer's log-gamma
+LUT). The MSI's panel showed a colour cast, as GBRUNCH (docs/06) saw on theirs, so `gfx-mesa` now
+forces SDR in build.prop: `force_color_mode=7`, `persistent_hdr=false`, `use_log_gamma_lut=false`
+(image's lines deleted, ours appended, in place). If a panel ever looks wrong the other way, those
+three lines in `features/gfx-mesa/patch-vendor.sh` are the knob.
 
 ## Machines tried
 
@@ -116,7 +116,7 @@ panel); then add the three lines in `features/gfx-mesa/patch-vendor.sh`.
 | QEMU/KVM | host / virtio | boots to system_server; SurfaceFlinger crashes in softpipe (QEMU 2D virtio-gpu) |
 | Asus T300FA | Core M-5Y10 / HD 5300 | not bootable (CPU floor) |
 | HP AiO | older Intel | `init` invalid opcode (CPU floor) |
-| MSI (Core Ultra 7 255HX) | Arrow Lake / RTX 50 (10de:2f18) | hybrid mode: boots and runs (xe + our allocator); discrete (MUX) mode: works on nouveau/NVK (panel, HDMI, Chrome); distro driver set: touchpad works; audio (audio-generic) to test |
+| MSI (Core Ultra 7 255HX) | Arrow Lake / RTX 50 (10de:2f18) | hybrid mode: boots and runs (xe + our allocator); discrete (MUX) mode: works on nouveau/NVK (panel, HDMI, Chrome); distro driver set: touchpad works; audio works (audio-generic + churro-mixer); colour cast → SDR props (gfx-mesa) |
 
 ## Design direction: distro-style driver coverage (steps 1-2 done: distro module set + firmware)
 

@@ -41,6 +41,12 @@ edit '/^(ro\.hardware\.egl|ro\.hardware\.vulkan|ro\.hwui\.use_vulkan|debug\.rend
 # drm_hwcomposer is set to require the KMS COLOR_PIPELINE plane property, which only Panther
 # Lake-class display hardware has; elsewhere it rejects every plane. Generic PCs: off.
 edit 's/^vendor\.hwc\.drm\.enable_color_pipeline=true$/vendor.hwc.drm.enable_color_pipeline=false/' "$V/build.prop"
+# Google tunes the composer for the Lenovo panel: colour mode 13, persistent HDR, log-gamma LUT.
+# On generic panels that gives a colour cast / washed-out picture. Force SDR (as GBRUNCH does):
+# colour mode 7, no persistent HDR, no log-gamma LUT. `>>` appends in place (keeps the xattr).
+edit '/^vendor\.hwc\.drm\.(force_color_mode|persistent_hdr|use_log_gamma_lut)=/d' "$V/build.prop"
+printf '%s\n' vendor.hwc.drm.force_color_mode=7 vendor.hwc.drm.persistent_hdr=false \
+  vendor.hwc.drm.use_log_gamma_lut=false >> "$V/build.prop"
 echo "   vendor: Mesa installed (+libs:$added)"
 
 # 4. every DRM node is a GPU/display device. The image only labels card0/card1/renderD128/129;
