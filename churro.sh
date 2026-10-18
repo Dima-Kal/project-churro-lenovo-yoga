@@ -100,6 +100,7 @@ cmd_build() {
     log "applying features: $feats (dm-verity off)"
     vbmeta_disable "$(part vbmeta_a)"
     export CHURRO_KERNEL=$kdir   # for features adding our kernel's modules (gpu-nouveau)
+    export CHURRO_XE_IDS=$W/xe-ids   # drivers-extra: GPU IDs the image's xe binds -> boot menu
     # vendor_dlkm first: firmware-extra (a vendor feature) reads the module list from it
     for p in vendor_dlkm vendor system_ext product odm; do
       for f in "${fdirs[@]}"; do
@@ -240,7 +241,7 @@ cmd_auto() {
   while [ $# -gt 0 ]; do case $1 in
     --gfx) gfx=$2; shift 2 ;; --kernel-profile) kprof=$2; shift 2 ;;
     --data-size) dsize=$2; shift 2 ;;   # userdata GiB (default 12: image ~26 GiB, needs a 32 GB stick)
-    --packs) packs=$2; shift 2 ;;   # module packs from prepare.sh: virt,gpu,storage[,wifi,i915]
+    --packs) packs=$2; shift 2 ;;   # module packs from prepare.sh: virt,gpu,storage[,wifi]
     --extra-features) xfeat=,$2; shift 2 ;;   # extra features for test builds
     --vexemu) vexemu=$2; shift 2 ;;
     *) die "unknown option $1" ;; esac; done
@@ -249,6 +250,7 @@ cmd_auto() {
   # shellcheck disable=SC1090
   . "$envf"; export CHURRO_MESA CHURRO_MESA_SYSROOT
   local margs=() p; for p in ${packs//,/ }; do
+    [ "$p" != i915 ] || die "the i915 pack is retired (it broke xe on Gen12+): i915 now comes with drivers-extra and only loads on Intel GPUs xe doesn't drive"
     [ -d "$CHURRO_PACK_DIR/$p" ] || die "no module pack '$p' in $CHURRO_PACK_DIR"; margs+=(--modules "$CHURRO_PACK_DIR/$p"); done
   [ "$gfx" = auto ] || CHURRO_EXTRA_ARGS="androidboot.churro.gfx=$gfx ${CHURRO_EXTRA_ARGS:-}"
   cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --vexemu "$vexemu" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,gfx-minigbm,gpu-nouveau,drivers-extra,audio-generic,debug-log$xfeat" "${margs[@]}"

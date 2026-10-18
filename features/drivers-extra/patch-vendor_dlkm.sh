@@ -22,6 +22,14 @@ W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 export LC_ALL=C
 n() { basename "$1" .ko | tr - _; }
 
+# Intel GPUs the image's xe driver binds (device IDs, upper-case hex as in modules.alias). Our i915
+# must never load for those: it wedged Arrow Lake next to xe (docs/02). Its aliases are filtered
+# below; the list also goes to the boot menu (esp.sh: native for these, mesa for older Intel).
+modinfo -F alias "$D/xe.ko" 2>/dev/null | sed -nE 's/^pci:v00008086d0000([0-9A-F]{4}).*/\1/p' | sort -u > "$W/xeids"
+# fail closed: an empty list would let i915 claim every Gen12+ GPU again (the Arrow Lake regression)
+[ -s "$W/xeids" ] || { echo "drivers-extra: no device IDs in $D/xe.ko - refusing to ship i915 unfiltered" >&2; exit 1; }
+[ -z "${CHURRO_XE_IDS:-}" ] || cp "$W/xeids" "$CHURRO_XE_IDS"
+
 # the image's modules: vendor_dlkm (here) + system_dlkm (GKI modules, other partition of super)
 read -r off size < <(python3 "$CHURRO_HERE/lib/lpinfo.py" "$CHURRO_SUPER" system_dlkm_a)
 L=$(losetup -f --show -r -o "$off" --sizelimit "$size" "$CHURRO_SUPER")
@@ -91,7 +99,9 @@ sed -E "s#(^| )vendor/#\1$VP/#g; s#(^| )system/#\1$SP#g" "$R/modules.dep" |
 grep -v -F -f <(sed "s#^#$VP/#; s#\$#:#" "$W/ours") "$D/modules.dep" > "$W/dep" || true
 cat "$W/dep" "$W/dep.new" > "$D/modules.dep"
 { cat "$D/modules.alias"
-  while read -r b; do m=$(n "$b"); modinfo -F alias "$D/$b" 2>/dev/null | sed "s/^/alias /; s/\$/ $m/"; done < "$W/ours"
+  while read -r b; do m=$(n "$b"); modinfo -F alias "$D/$b" 2>/dev/null |
+    if [ "$m" = i915 ]; then grep -viF -f <(sed 's/^/pci:v00008086d0000/' "$W/xeids") || true; else cat; fi |
+    sed "s/^/alias /; s/\$/ $m/"; done < "$W/ours"
 } | awk '!seen[$0]++' > "$W/alias"
 cat "$W/alias" > "$D/modules.alias"
 if [ -s "$R/modules.softdep" ] && [ -f "$D/modules.softdep" ]; then
@@ -99,5 +109,6 @@ if [ -s "$R/modules.softdep" ] && [ -f "$D/modules.softdep" ]; then
     cat "$D/modules.softdep" - | awk '!seen[$0]++' > "$W/sd" || true
   cat "$W/sd" > "$D/modules.softdep"
 fi
+grep -qx i915.ko "$W/ours" && echo "   vendor_dlkm: i915 for older Intel GPUs: $(grep -c ' i915$' "$D/modules.alias") device IDs ($(wc -l < "$W/xeids") left to xe)"
 echo "   vendor_dlkm: +$(wc -l < "$W/ours") modules from our kernel build ($(cd "$D" && du -cm $(cat "$W/ours") | tail -1 | cut -f1) MiB), $(wc -l < "$W/dropped") left out by the ABI check"
 sed 's/^/     left out: /' "$W/dropped"

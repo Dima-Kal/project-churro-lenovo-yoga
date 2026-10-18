@@ -18,8 +18,12 @@
 In WSL/Linux as root, from the repo:
 
 ```bash
-sudo ./churro.sh auto android-desktop_signed_recovery_image.bin churro.img --gfx mesa --packs virt,gpu,storage,wifi
+sudo ./churro.sh auto android-desktop_signed_recovery_image.bin churro.img --packs virt,gpu,storage,wifi
 ```
+
+No `--gfx` or i915 option needed: i915 ships with `drivers-extra` and only loads on GPUs the
+image's `xe` doesn't drive (the HD 5300 is one), and the boot menu then picks `mesa` by itself.
+The same image keeps booting Gen12+ machines on Google's stack.
 
 Check the Wi-Fi chip first (Windows Device Manager → Network adapters): "Qualcomm Atheros" →
 keep `wifi`; "Intel Dual Band Wireless-AC 7265" → drop `wifi` from `--packs`.

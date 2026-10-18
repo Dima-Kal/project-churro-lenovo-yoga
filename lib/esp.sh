@@ -31,6 +31,15 @@ set boot_source=$bsrc
 set extra_args="${CHURRO_EXTRA_ARGS:-}"
 set default=${CHURRO_DEFAULT_ENTRY:-0}
 EOF
+  # Intel iGPUs the image's xe driver binds (device IDs from drivers-extra) keep Google's stack;
+  # any other Intel iGPU is pre-Gen12 -> our i915 + Mesa. setpci prints hex in no fixed case or
+  # width: match both cases and leading zeros. No list (e.g. --no-repack): every Intel -> native.
+  local xesel=""
+  if [ -s "${CHURRO_XE_IDS:-}" ]; then
+    local xere; xere=$({ cat "$CHURRO_XE_IDS"; tr 'A-F' 'a-f' < "$CHURRO_XE_IDS"; } | sort -u | paste -sd'|')
+    xesel="setpci -s 00:02.0 -v igpudev DEVICE_ID
+if [ \"\$igpu\" = \"8086\" ]; then if regexp '^0*($xere)\$' \"\$igpudev\"; then set gfx=native; else set gfx=mesa; fi; fi"
+  fi
   cat > "$mnt/churro/grub.cfg" <<EOF
 # Project Churro boot menu. Kernel cmdline = Googlebook vendor_boot cmdline + Churro additions.
 set timeout=5
@@ -46,13 +55,15 @@ set base="\$vcmd androidboot.boot_part_uuid=\$puuid androidboot.boot_source=\$bo
 set dbg="console=tty0 console=ttyS1,115200 ignore_loglevel printk.devkmsg=on panic=0 androidboot.init_fatal_panic=true softlockup_panic=0 nmi_watchdog=nopanic ${CHURRO_DEBUG_ARGS:-}"
 # Graphics stack from the GPUs present, appended last: a menu entry or extra_args naming one
 # comes first on the cmdline and wins (Android keeps the first value of a ro. property).
-# Intel iGPU (always at 00:02.0, hybrid laptops included) -> Googlebook's own stack; else an
-# NVIDIA GPU (display controller class 0300/0302) -> nouveau; else software rendering.
+# Intel iGPU (always at 00:02.0, hybrid laptops included) -> Googlebook's own stack (xe), or
+# Mesa on our i915 if xe doesn't know the GPU (pre-Gen12); else an NVIDIA GPU (display
+# controller class 0300/0302) -> nouveau; else software rendering.
 set gfx=soft
 setpci -d 10de: -v nvclass CLASS_DEVICE
 if [ "\$nvclass" = "300" -o "\$nvclass" = "302" -o "\$nvclass" = "0300" -o "\$nvclass" = "0302" ]; then set gfx=nouveau; fi
 setpci -s 00:02.0 -v igpu VENDOR_ID
 if [ "\$igpu" = "8086" ]; then set gfx=native; fi
+$xesel
 set gfx="androidboot.churro.gfx=\$gfx"
 # A submenu opens a new GRUB context that only sees exported variables: without this, the
 # "Graphics: other stacks" entries boot with an empty cmdline (no vendor args) and reboot at once.

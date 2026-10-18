@@ -1,6 +1,6 @@
 # Modules of our kernel build that must not go to vendor_dlkm (names with _, globs ok).
-# i915: opt-in ramdisk pack only (wedged Arrow Lake next to the image's xe).
-i915
+# (i915 is NOT skipped: it ships here linked against Google's drm_display_helper, with every
+#  device ID the image's xe binds removed from its aliases - see patch-vendor_dlkm.sh.)
 # kunit test modules
 *_kunit
 *_test

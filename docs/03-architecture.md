@@ -136,7 +136,8 @@ files get a sibling's label or an explicit one.
   ours; a module with an unknown symbol or a CRC mismatch against Google's modules is left out
   (with everything that needs it), and a Google module is replaced by our build only if ours
   exports everything Google's does with identical CRCs (drm_ttm_helper: + the fbdev console).
-  `skip.txt`: modules never added (i915: opt-in pack).
+  `skip.txt`: modules never added. i915 is added, but its aliases lose every device ID the
+  image's `xe.ko` binds, so `ueventd` only loads it on pre-Gen12 Intel GPUs.
 * `firmware-extra` (default) — firmware the image's drivers need but the image lacks, installed
   into `/vendor/firmware` (labelled like that dir) from a pinned linux-firmware release
   (`CHURRO_LINUX_FIRMWARE`; tarball downloaded and unpacked once into

@@ -96,15 +96,45 @@ older CPUs unsupported.
 | GPU | Today | Next |
 |---|---|---|
 | Intel iGPU / Arc (Gen12+) | image's own `xe` + `firmware-extra` (GuC/HuC/GSC/DMC from linux-firmware); default graphics = Google's stack (ANGLE on ANV); hwcomposer color pipeline off; allocator rebuilt (`gfx-minigbm`): any Xe GPU, by graphics IP version | — (Arrow Lake verified on the MSI) |
-| Intel pre-Gen12 | opt-in `i915` pack (not default: it wedged Arrow Lake and broke `xe`) | only relevant with CPU emulation |
+| Intel pre-Gen12 | our `i915` via `drivers-extra` (vendor_dlkm, linked to Google's `drm_display_helper`; aliases minus the 139 IDs `xe.ko` binds, so it only loads where `xe` can't) + Mesa `iris`/`crocus`; boot menu picks `mesa` for them | needs the `#UD` emulator (Haswell…Ice Lake CPUs); T300FA to verify |
 | AMD | amdgpu module + firmware (distro module set); no userspace yet | Mesa radeonsi/radv + allocator backend + GRUB detection |
 | NVIDIA | `gpu-nouveau` (below): nouveau display + GSP firmware + allocator with VRAM buffers; GL = Zink on NVK (Turing+) or nouveau GL (older), Vulkan = NVK; only where nothing else drives the display | MSI discrete mode (RTX 5070 Ti, GB205) works: panel + HDMI, Chrome (NVK AHB patch); hybrid machines: NVIDIA unused (HDMI wired to it stays dark) → reverse PRIME / render offload |
 | No usable GPU | no UI: no allocator backend for simpledrm/vgem, and Mesa's software path needs llvmpipe (LLVM) to import buffers | fallback allocator backend + llvmpipe |
 | VMs (QEMU) | virtio-gpu, vgem in the `gpu` pack | — |
 
 The graphics stack is picked at boot (`--gfx auto`, the default): GRUB reads PCI config space -
-an Intel iGPU at 00:02.0 (hybrid laptops included) → `native`; else an NVIDIA display controller
-→ `nouveau`; else `soft`. A GRUB menu entry or an explicit `--gfx` wins.
+an Intel iGPU at 00:02.0 (hybrid laptops included) → `native` if the image's `xe.ko` binds its
+device ID, `mesa` (our i915) if not; else an NVIDIA display controller → `nouveau`; else `soft`.
+The ID list comes from `xe.ko` at build time (drivers-extra → `CHURRO_XE_IDS` → a `regexp` in
+grub.cfg); without it every Intel iGPU gets `native`. A GRUB menu entry or an explicit `--gfx` wins.
+
+**Why i915 is safe next to xe now** (it caused the MSI regression as a first-stage pack, docs/02):
+that pack loaded on every machine, claimed Gen12+ GPUs before `xe` (i915 lists 109 of the 139 IDs
+`xe` binds) and brought its own `drm_display_helper`, which lacks the vendor backports `xe` needs
+(`drm_dp_cec_*`, `drm_dp_dsc_sink_slice_count_mask`). Checked offline with depmod against the
+image's modules: our i915 links against **Google's** `drm_display_helper`/`drm_buddy`/`video`/
+`wmi`/`i2c-algo-bit` with no unknown symbols or CRC mismatches (adds only `intel-gtt`, `hwmon`),
+while swapping in our `drm_display_helper` reproduces the MSI's `xe` errors. drivers-extra never
+replaces a Google module with one that exports less, so `xe` keeps Google's. The minigbm
+`xe-unknown-gpus` fix is unaffected: every GPU `xe` binds stays on `xe`.
+
+**`soft` only works in VMs today.** Confirmed on the T300FA (no i915 loaded): with
+`androidboot.churro.gfx=soft`, `gfx-soft.rc` is imported but `vendor.graphics.allocator` and
+SurfaceFlinger fail with `Failed to initialize driver` in a loop. Our minigbm build
+(`gfx/build-minigbm.sh`) has no backend for the only DRM devices left, `vgem` (renderD128) and
+`simpledrm` (card0): `drv_backend_list` covers i915/xe + the dumb drivers (evdi, udl, vkms, …),
+and `vgem`/`simpledrm` are not among them. In QEMU the virtio-gpu backend is used instead,
+which is why it worked there. Worth keeping for debugging and GPU-less machines: the fix is a
+`gfx/minigbm-patches/` patch adding `INIT_DUMB_DRIVER(vgem)` (+ `simpledrm`) to `dumb_driver.c`
+/ `drv_backend_list`, tried **only as a last resort** in `cros_gralloc_driver.cc`
+(`init_try_nodes`): vgem is always loaded and usually gets renderD128 *before* the real GPU,
+so a plain backend would make minigbm pick vgem on every machine. Then check Mesa's
+kms_swrast/llvmpipe can map those buffers (the row above).
+
+**Gotcha when testing `soft` by hand:** the main GRUB entries append the auto-detected `$gfx`
+last, and Android keeps the *first* `androidboot.churro.gfx=` value (`Init cannot set
+'ro.boot.churro.gfx' … already set`). Replace `$gfx` in the edited `linux` line rather than
+adding a second value after it.
 
 ## Other hardware
 

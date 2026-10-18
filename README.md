@@ -20,10 +20,10 @@ sudo tools/qemu-test.sh churro.img                                          # op
 ```
 
 Options: `--gfx auto|native|nouveau|mesa|soft` (graphics stack; `auto`, the default, lets the boot
-menu pick from the GPUs present: Intel iGPU → `native` = Google's ANGLE-on-Intel-Vulkan, NVIDIA
-without iGPU → `nouveau`, else `soft`; switchable in the GRUB menu) and
-`--packs virt,gpu,storage[,wifi,i915]` (`wifi` = Atheros ath9k,
-drop it on machines with Intel Wi-Fi; `i915` = pre-Gen12 Intel graphics only) and `--data-size N`
+menu pick from the GPUs present: Intel iGPU → `native` = Google's ANGLE-on-Intel-Vulkan (Gen12+)
+or `mesa` on our i915 (older Intel, loaded only there), NVIDIA without iGPU → `nouveau`, else
+`soft`; switchable in the GRUB menu) and `--packs virt,gpu,storage[,wifi]` (`wifi` = Atheros ath9k,
+drop it on machines with Intel Wi-Fi) and `--data-size N`
 (Android's data partition in GiB, default 12; the image is then ~26 GiB, so use a USB stick of
 32 GB or more — the image's own 4 GiB fills up on first boot).
 Hardware status and roadmap: [docs/05-hardware-support.md](docs/05-hardware-support.md).
