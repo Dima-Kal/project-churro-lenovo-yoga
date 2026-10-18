@@ -50,7 +50,9 @@ switches the ESP to `boot_source=internal`.
 > uses from the very first program (`init`), so it cannot boot this image (see 02, "Older CPUs").
 > With the `#UD` emulator it now gets through first-stage `init`; the next stop was `vaesenc ymm`
 > in `libcrypto.so` (BoringSSL FIPS self-test, SIGILL in second-stage `init`), which is now
-> emulated too (docs/05). Not yet re-tested on the device.
+> emulated too (docs/05). The next stop after that was a REX-prefixed `sha1nexte %xmm9,%xmm1`
+> in the same FIPS module (SHA-NI on xmm8–15), now handled as well. A full-image scan found no
+> other Broadwell gaps on the boot path. Not yet re-tested on the device.
 
 ## What to report back
 

@@ -53,6 +53,10 @@ extern void pc_256_i00(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void pc_256_i11(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void pc_256_i01(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void pc_256_i10(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
+extern void sha256msg1_rex45(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
+extern void sha256msg2_rex44(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
+extern void sha1nexte_rex41(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
+extern void sha256rnds2_rex45(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void vaesenc_256_reg(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void vaesenclast_256_reg(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
 extern void vaesdec_256_reg(u32 *r, const u32 *a, const u32 *b, const u32 *acc);
@@ -315,6 +319,16 @@ static void ref_aesdeclast(u32 *d, const u32 *acc, const u32 *a, const u32 *b, i
 typedef void (*stub_t)(u32 *, const u32 *, const u32 *, const u32 *);
 typedef void (*ref_t)(u32 *, const u32 *, const u32 *, const u32 *, int);
 
+// REX SHA stubs return the full ymm DEST: low lane = SHA result, upper lane kept from acc (legacy SSE)
+static void keephi(ref_t f, u32 *d, const u32 *acc, const u32 *a, const u32 *b) {
+	f(d, acc, a, b, 4);
+	for (int i = 4; i < 8; i++) d[i] = acc[i];
+}
+static void ref_s256m1_hi(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int l) { keephi(ref_s256m1, d, acc, a, b); }
+static void ref_s256m2_hi(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int l) { keephi(ref_s256m2, d, acc, a, b); }
+static void ref_s1ne_hi(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int l) { keephi(ref_s1ne, d, acc, a, b); }
+static void ref_s256r2_hi(u32 *d, const u32 *acc, const u32 *a, const u32 *b, int l) { keephi(ref_s256r2, d, acc, a, b); }
+
 struct tc {
 	const char *name; // "vpdpwssd/256/reg"
 	stub_t stub;
@@ -360,6 +374,11 @@ static const struct tc tests[] = {
 	{ "sha1rnds4/reg@i1", sha1rnds4_i1, ref_s1r4_1, 's' },
 	{ "sha1rnds4/reg@i2", sha1rnds4_i2, ref_s1r4_2, 's' },
 	{ "sha1rnds4/reg@i3", sha1rnds4_i3, ref_s1r4_3, 's' },
+	// REX (xmm8-15) forms; "/256" = compare all 8 lanes (upper half must survive)
+	{ "sha256msg1/256/rex45-keephi", sha256msg1_rex45, ref_s256m1_hi, 's' },
+	{ "sha256msg2/256/rex44-keephi", sha256msg2_rex44, ref_s256m2_hi, 's' },
+	{ "sha1nexte/256/rex41-keephi", sha1nexte_rex41, ref_s1ne_hi, 's' },
+	{ "sha256rnds2/256/rex45-keephi", sha256rnds2_rex45, ref_s256r2_hi, 's' },
 	// vpclmulqdq: imms vary qword select per lane
 	{ "vpclmulqdq/128/i00", pc_128_i00, ref_pcm_i00, 'p' },
 	{ "vpclmulqdq/256/i00", pc_256_i00, ref_pcm_i00, 'p' },

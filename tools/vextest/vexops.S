@@ -186,6 +186,27 @@ SHA4STUB(sha1rnds4_i1, 1)
 SHA4STUB(sha1rnds4_i2, 2)
 SHA4STUB(sha1rnds4_i3, 3)
 
+// REX forms (xmm8-15, as in BoringSSL/liblzma) + legacy-SSE upper-half check: DEST is loaded as a
+// full ymm from acc, so out[4..7] must come back as acc[4..7]. modrm 0xd1: reg=2, rm=1;
+// REX.R -> xmm10, REX.B -> xmm9. xmm0 = WK for sha256rnds2.
+#define SHAREX(name, rex, op, dreg)		\
+	.globl name;				\
+name:						\
+	vmovdqu	(%rsi), %ymm0;			\
+	vmovdqu	(%rdx), %ymm1;			\
+	vmovdqu	(%rdx), %ymm9;			\
+	vmovdqu	(%rcx), %ymm2;			\
+	vmovdqu	(%rcx), %ymm10;			\
+	.byte	rex, 0x0f, 0x38, op, 0xd1;	\
+	vmovdqu	dreg, (%rdi);			\
+	vzeroupper;				\
+	ret
+
+SHAREX(sha256msg1_rex45, 0x45, 0xcc, %ymm10)
+SHAREX(sha256msg2_rex44, 0x44, 0xcd, %ymm10)
+SHAREX(sha1nexte_rex41, 0x41, 0xc8, %ymm2)
+SHAREX(sha256rnds2_rex45, 0x45, 0xcb, %ymm10)
+
 // --- vpclmulqdq: VEX.66.0F3A.W0 0x44 /r ib ---
 #define PCMSTUB(name, b2, imm)			\
 	.globl name;				\

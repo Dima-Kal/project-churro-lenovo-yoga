@@ -56,7 +56,8 @@ Plan (implemented): a kernel `#UD` handler (`kmod/patches/vex-emulate.patch`, bu
 AVX-VNNI `vpdpbusd(s)`/`vpdpwssd(s)`, AVX-IFMA `vpmadd52l/huq`, GFNI
 `gf2p8affine[inv]qb`/`gf2p8mulb`, VPCLMULQDQ (VEX 128/256), 256-bit VAES
 (`vaesenc/enclast/dec/declast` ymm), and the legacy-encoded SHA-NI set
-(`sha1rnds4/nexte/msg1/msg2`, `sha256rnds2/msg1/msg2`). GFNI and SHA land here because
+(`sha1rnds4/nexte/msg1/msg2`, `sha256rnds2/msg1/msg2`, incl. the REX forms for xmm8–15 that
+BoringSSL and liblzma use; legacy writes keep the upper YMM half). GFNI and SHA land here because
 `init`'s libcrypto (AES key schedule) and BoringSSL's FIPS module check (HMAC-SHA-256) run
 them unconditionally; `vpclmulqdq` likewise via AES-GCM, and `vaesenc ymm` via the FIPS
 self-test (`libcrypto.so` from second-stage `init`: SIGILL right after first stage on the

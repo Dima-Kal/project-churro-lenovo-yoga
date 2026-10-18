@@ -397,7 +397,8 @@ static void churro_vex_read(const struct xregs_state *xs, int n, u32 *v, bool y)
 		memset((u8 *)v + 16, 0, 16);
 }
 
-static void churro_vex_write(struct xregs_state *xs, int n, const u32 *v, bool y)
+static void churro_vex_write(struct xregs_state *xs, int n, const u32 *v, bool y,
+			     bool legacy)
 {
 	void *hi;
 
@@ -417,8 +418,8 @@ static void churro_vex_write(struct xregs_state *xs, int n, const u32 *v, bool y
 		}
 		hi = get_xsave_addr(xs, XFEATURE_YMM);
 		memcpy((u8 *)hi + 16 * n, (const u8 *)v + 16, 16);
-	} else if (xs->header.xfeatures & XFEATURE_MASK_YMM) {
-		/* a VEX.128 write zeroes the high half */
+	} else if (!legacy && (xs->header.xfeatures & XFEATURE_MASK_YMM)) {
+		/* a VEX.128 write zeroes the high half; legacy SSE keeps it */
 		hi = get_xsave_addr(xs, XFEATURE_YMM);
 		memset((u8 *)hi + 16 * n, 0, 16);
 	}
@@ -432,6 +433,7 @@ static bool handle_vex_ud(struct pt_regs *regs)
 	struct insn insn;
 	struct fpu *fpu = x86_task_fpu(current);
 	struct xregs_state *xs;
+	bool legacy = false;
 	u32 saved_rex;
 	void __user *ea;
 	u8 vex1, vex2, imm = 0;
@@ -446,7 +448,7 @@ static bool handle_vex_ud(struct pt_regs *regs)
 
 	len = MAX_INSN_SIZE - copy_from_user(buf, (void __user *)regs->ip,
 					     MAX_INSN_SIZE);
-	if (len < 5 || insn_decode(&insn, buf, len, INSN_MODE_64))
+	if (len < 4 || insn_decode(&insn, buf, len, INSN_MODE_64))	/* sha1nexte xmm,xmm is 4 bytes */
 		return false;
 
 	/* VEX: only 3-byte VEX (0xC4), 66 prefix, map 0F38 or 0F3A */
@@ -505,23 +507,30 @@ static bool handle_vex_ud(struct pt_regs *regs)
 		s2 = X86_MODRM_RM(insn.modrm.value) + (!X86_VEX_B(vex1) ? 8 : 0);
 	} else {
 		/*
-		 * SHA-NI, legacy NP encodings: 0F 38 C8..CD /r and
-		 * 0F 3A CC /r ib (sha1rnds4). buf[0]==0x0F rules out any
-		 * prefix byte (incl. REX), so register numbers stay < 8.
+		 * SHA-NI, legacy NP encodings: [REX] 0F 38 C8..CD /r and
+		 * [REX] 0F 3A CC /r ib (sha1rnds4). REX.R/REX.B select
+		 * xmm8-15 (BoringSSL and liblzma use them); any other prefix
+		 * byte makes it a different instruction -> plain SIGILL.
 		 */
-		if (buf[0] != 0x0f)
+		const u8 *p = buf;
+		u8 rex = 0;
+
+		if ((p[0] & 0xf0) == 0x40)
+			rex = *p++;
+		if (p[0] != 0x0f)
 			return false;
-		if (buf[1] == 0x38 && buf[2] >= 0xc8 && buf[2] <= 0xcd) {
-			op = CHURRO_SHA1NEXTE + buf[2] - 0xc8;
-		} else if (buf[1] == 0x3a && buf[2] == 0xcc) {
+		if (p[1] == 0x38 && p[2] >= 0xc8 && p[2] <= 0xcd) {
+			op = CHURRO_SHA1NEXTE + p[2] - 0xc8;
+		} else if (p[1] == 0x3a && p[2] == 0xcc) {
 			op = CHURRO_SHA1RNDS4;
 			imm = insn.immediate.value & 0xff;
 		} else {
 			return false;
 		}
 		y = 0;
-		dst = X86_MODRM_REG(insn.modrm.value);
-		s2 = X86_MODRM_RM(insn.modrm.value);
+		legacy = true;
+		dst = X86_MODRM_REG(insn.modrm.value) + (X86_REX_R(rex) ? 8 : 0);
+		s2 = X86_MODRM_RM(insn.modrm.value) + (X86_REX_B(rex) ? 8 : 0);
 		s1 = 0;		/* sha256rnds2's implicit third operand is xmm0 */
 	}
 
@@ -575,7 +584,7 @@ static bool handle_vex_ud(struct pt_regs *regs)
 				  y ? 4 : 2, op == CHURRO_VPM52HQ);
 	else
 		churro_vex_vnni(vd, vacc, va, vb, y ? 8 : 4, op);
-	churro_vex_write(xs, dst, vd, y);
+	churro_vex_write(xs, dst, vd, y, legacy);
 
 	restore_fpregs_from_fpstate(fpu->fpstate, XFEATURE_MASK_FPSTATE);
 	fpregs_unlock();
