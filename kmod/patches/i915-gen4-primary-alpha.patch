@@ -1,0 +1,42 @@
+--- a/drivers/gpu/drm/i915/display/i9xx_plane.c
++++ b/drivers/gpu/drm/i915/display/i9xx_plane.c
+@@ -40,6 +40,8 @@
+ 	DRM_FORMAT_RGB565,
+ 	DRM_FORMAT_XRGB8888,
+ 	DRM_FORMAT_XBGR8888,
++	DRM_FORMAT_ARGB8888,	/* Churro: alpha ignored, see i9xx_plane_ctl() */
++	DRM_FORMAT_ABGR8888,
+ 	DRM_FORMAT_XRGB2101010,
+ 	DRM_FORMAT_XBGR2101010,
+ };
+@@ -50,6 +52,8 @@
+ 	DRM_FORMAT_RGB565,
+ 	DRM_FORMAT_XRGB8888,
+ 	DRM_FORMAT_XBGR8888,
++	DRM_FORMAT_ARGB8888,	/* Churro: alpha ignored, see i9xx_plane_ctl() */
++	DRM_FORMAT_ABGR8888,
+ 	DRM_FORMAT_XRGB2101010,
+ 	DRM_FORMAT_XBGR2101010,
+ 	DRM_FORMAT_XBGR16161616F,
+@@ -187,11 +191,19 @@
+ 	case DRM_FORMAT_XBGR8888:
+ 		dspcntr |= DISP_FORMAT_RGBX888;
+ 		break;
++	/*
++	 * Churro: only VLV/CHV primaries have alpha formats. Elsewhere (gen4..gen8) scan them out
++	 * as X formats: the primary is the bottom plane over the pipe's black background, so
++	 * ignoring alpha equals blending premultiplied pixels over black. Without this no plane
++	 * accepts ARGB/ABGR8888 and Android's composer (RGBA_8888 client target) shows nothing.
++	 */
+ 	case DRM_FORMAT_ARGB8888:
+-		dspcntr |= DISP_FORMAT_BGRA888;
++		dspcntr |= display->platform.valleyview || display->platform.cherryview ?
++			   DISP_FORMAT_BGRA888 : DISP_FORMAT_BGRX888;
+ 		break;
+ 	case DRM_FORMAT_ABGR8888:
+-		dspcntr |= DISP_FORMAT_RGBA888;
++		dspcntr |= display->platform.valleyview || display->platform.cherryview ?
++			   DISP_FORMAT_RGBA888 : DISP_FORMAT_RGBX888;
+ 		break;
+ 	case DRM_FORMAT_XRGB2101010:
+ 		dspcntr |= DISP_FORMAT_BGRX101010;
