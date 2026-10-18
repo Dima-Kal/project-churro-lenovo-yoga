@@ -54,6 +54,9 @@ if [ "\$nvclass" = "300" -o "\$nvclass" = "302" -o "\$nvclass" = "0300" -o "\$nv
 setpci -s 00:02.0 -v igpu VENDOR_ID
 if [ "\$igpu" = "8086" ]; then set gfx=native; fi
 set gfx="androidboot.churro.gfx=\$gfx"
+# A submenu opens a new GRUB context that only sees exported variables: without this, the
+# "Graphics: other stacks" entries boot with an empty cmdline (no vendor args) and reboot at once.
+export base dbg extra_args
 
 menuentry "Googlebook OS (Churro)" {
   linux (\$root)/churro/kernel \$base \$extra_args \$gfx
