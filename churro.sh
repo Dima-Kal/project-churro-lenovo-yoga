@@ -22,7 +22,13 @@ LOOP=""; cleanup() { [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null || true; }
 trap cleanup EXIT
 
 # Partition by GPT label (labels are stable across Googlebook images, numbers might not be).
-part() { local n; n=$(sgdisk -p "$LOOP" | awk -v l="$1" '$NF == l {print $1; exit}'); [ -n "$n" ] || die "no partition $1"; echo "${LOOP}p$n"; }
+part() {
+  local n; n=$(sgdisk -p "$LOOP" | awk -v l="$1" '$NF == l {print $1; exit}'); [ -n "$n" ] || die "no partition $1"
+  local p="${LOOP}p$n"
+  for _ in {1..15}; do [ -b "$p" ] && break; partx -a "$LOOP" 2>/dev/null || partprobe "$LOOP" 2>/dev/null || true; sleep 1; done
+  [ -b "$p" ] || die "partition block device $p failed to appear"
+  echo "$p"
+}
 
 # pinfo <disk|image> <n>: "first last typeGUID uniqueGUID attrs name" of partition n
 pinfo() { sgdisk -i "$2" "$1" | awk -F': ' '/First sector/ {split($2,a," "); f=a[1]} /Last sector/ {split($2,a," "); l=a[1]}
@@ -85,7 +91,10 @@ cmd_build() {
       log "userdata: $((cur >> 20)) MiB -> $dsize GiB"
       truncate -s +$(((dsize << 30) - cur)) "$out"; grow_userdata "$out"; fi
   fi
-  LOOP=$(losetup -f --show -P "$out"); udevadm settle 2>/dev/null || sleep 1
+  sync
+  LOOP=$(losetup -f --show -P "$out")
+  partprobe "$LOOP" 2>/dev/null || true
+  udevadm settle 2>/dev/null || sleep 2
   local W; W=$(mktemp -d /tmp/churro.XXXX)
 
   log "extracting boot images (slot _a)"

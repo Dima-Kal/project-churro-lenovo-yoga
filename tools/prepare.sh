@@ -16,8 +16,11 @@ log() { echo ">> $*"; }
 G="https://android.googlesource.com"
 
 # --- 1. kernel identity from the image ---
-L=$(losetup -f --show -r -P "$IMG"); trap 'losetup -d "$L"' EXIT; sleep 1
+IMG=$(realpath "$1")
+L=$(losetup -f --show -r -P "$IMG"); trap 'losetup -d "$L"' EXIT
+udevadm settle 2>/dev/null || sleep 1
 n=$(sgdisk -p "$L" | awk '$NF == "boot_a" {print $1}')
+for i in 1 2 3 4 5; do [ -b "${L}p$n" ] && break; partprobe "$L" 2>/dev/null || true; sleep 1; done
 W=$C/image; mkdir -p "$W"; bootimg_extract "${L}p$n" "$W"
 for t in extract-ikconfig extract-vmlinux; do
   [ -s "$C/$t" ] || curl -fsSL --retry 3 "https://raw.githubusercontent.com/torvalds/linux/v6.18/scripts/$t" -o "$C/$t"

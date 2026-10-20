@@ -55,7 +55,7 @@ cd "mesa-$MESA_VER"
 # (mesa_clc, vtn_bindgen2) natively first - they need LLVM/Clang/libclc/SPIRV-LLVM-Translator.
 if [ ! -x "$WORK/host-tools/bin/mesa_clc" ]; then
   apt-get install -y -qq llvm-18-dev libclang-18-dev libclc-18-dev libllvmspirvlib-18-dev clang-18 \
-    libdrm-dev libexpat1-dev zlib1g-dev >/dev/null
+    libdrm-dev libexpat1-dev zlib1g-dev >/dev/null || true
   rm -rf build-host
   meson setup build-host --prefix="$WORK/host-tools" --buildtype release \
     -Dgallium-drivers= -Dvulkan-drivers= -Dplatforms= -Dglx=disabled -Degl=disabled -Dgbm=disabled \
