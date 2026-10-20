@@ -31,7 +31,10 @@ udevadm settle 2>/dev/null || sleep 1
 part() {
   local n; n=$(sgdisk -p "$LOOP" | awk -v l="$1" '$NF == l {print $1; exit}')
   [ -n "$n" ] || die "no partition $1 in $IMG"
-  echo "${LOOP}p$n"
+  local p="${LOOP}p$n"
+  for _ in {1..15}; do [ -b "$p" ] && break; partx -a "$LOOP" 2>/dev/null || partprobe "$LOOP" 2>/dev/null || true; sleep 1; done
+  [ -b "$p" ] || die "partition block device $p failed to appear"
+  echo "$p"
 }
 
 P_ESP=$(part EFI-SYSTEM)
