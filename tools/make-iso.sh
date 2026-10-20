@@ -280,14 +280,17 @@ extract_and_serve_logs() {
 </body></html>
 EOH
 
-  # Bring up Ethernet interface via DHCP and start BusyBox HTTP server on port 80
+  # Bring up only real Ethernet/USB-LAN interfaces via DHCP and start BusyBox HTTP server on port 80
   ip link set lo up 2>/dev/null || true
   for net in /sys/class/net/*; do
     ifn=$(basename "$net")
-    [ "$ifn" = "lo" ] && continue
-    echo ">> Bringing up network interface $ifn via DHCP..."
-    ip link set "$ifn" up 2>/dev/null || true
-    udhcpc -i "$ifn" -n -q -t 5 -T 2 2>/dev/null || true
+    case "$ifn" in
+      eth*|en*|usb*)
+        echo ">> Bringing up network interface $ifn via DHCP..."
+        ip link set "$ifn" up 2>/dev/null || true
+        udhcpc -i "$ifn" -n -q -t 3 -T 1 2>/dev/null || true
+        ;;
+    esac
   done
 
   MY_IP=$(ip -4 addr show 2>/dev/null | awk '/inet / && !/127.0.0.1/ {sub(/\/.*/, "", $2); print $2; exit}')
