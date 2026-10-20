@@ -10,6 +10,7 @@ cstr() { dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null | tr -d '\0'; }
 # writes outdir/kernel (if any) and outdir/ramdisk (if any)
 bootimg_extract() {
   local img=$1 out=$2 page=4096
+  for _ in {1..10}; do [ -e "$img" ] && break; sleep 0.5; done
   [ -e "$img" ] || { echo "image file not found: $img" >&2; return 1; }
   [ "$(cstr "$img" 0 8)" = "ANDROID!" ] || { echo "not a boot image: $img" >&2; return 1; }
   local hv; hv=$(u32 "$img" 40)
@@ -26,6 +27,7 @@ bootimg_extract() {
 # writes outdir/cmdline, outdir/bootconfig, outdir/ramdisk_<idx>_<type>_<name>
 vendorboot_extract() {
   local img=$1 out=$2
+  for _ in {1..10}; do [ -e "$img" ] && break; sleep 0.5; done
   [ -e "$img" ] || { echo "image file not found: $img" >&2; return 1; }
   [ "$(cstr "$img" 0 8)" = "VNDRBOOT" ] || { echo "not a vendor_boot image: $img" >&2; return 1; }
   local page vrsz hsz dtbsz tsz tnum tesz bcsz

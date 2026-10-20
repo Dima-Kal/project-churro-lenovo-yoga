@@ -80,7 +80,7 @@ cmd_build() {
   [ "$(id -u)" = 0 ] || die "run as root"
 
   if [ "$(realpath "$in")" != "$(realpath -m "$out")" ]; then
-    log "copying $in -> $out (sparse)"; cp --sparse=always "$in" "$out"
+    log "copying $in -> $out (sparse)"; rm -f "$out"; cp --sparse=always "$in" "$out"
   fi
   # userdata: Android 17 + Google apps fill the image's 4 GiB during the first boot (ENOSPC ->
   # system_server crash loop -> RescueParty shutdown). Make it last, then grow it to $dsize GiB.
