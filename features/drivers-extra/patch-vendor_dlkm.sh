@@ -33,14 +33,17 @@ modinfo -F alias "$D/xe.ko" 2>/dev/null | sed -nE 's/^pci:v00008086d0000([0-9A-F
 # Modules in Google's vendor_dlkm that conflict with vmlinux built-ins (kfifo_buf,
 # industrialio-triggered-buffer) or depend on them (hid-sensor-*): drop from $D so our build
 # of hid-sensor-* and intel-vbtn joins fresh, linked directly against vmlinux symbols in depmod.
+# NOTE: Do NOT use sed -i on $D/modules.* because sed -i creates a new inode and drops security.selinux!
 for bad in industrialio-triggered-buffer.ko kfifo_buf.ko "$D"/hid-sensor-*.ko "$D"/intel-vbtn.ko; do
   [ -e "$bad" ] || continue
   bn=$(basename "$bad")
   echo "   vendor_dlkm: replacing/dropping $bn (clearing duplicate/stale vmlinux dependencies)"
   rm -f "$D/$bn"
-  sed -i "s# */vendor/lib/modules/$bn##g" "$D"/modules.dep 2>/dev/null || true
-  sed -i "\#^/vendor/lib/modules/$bn:#d" "$D"/modules.dep 2>/dev/null || true
-  sed -i "/^$bn\$/d" "$D"/modules.load* 2>/dev/null || true
+  for mf in "$D"/modules.dep "$D"/modules.load "$D"/modules.load.recovery; do
+    [ -f "$mf" ] || continue
+    sed -e "s# */vendor/lib/modules/$bn##g" -e "\#^/vendor/lib/modules/$bn:#d" -e "/^$bn\$/d" "$mf" > "$W/mf.tmp"
+    cat "$W/mf.tmp" > "$mf"
+  done
 done
 
 # the image's modules: vendor_dlkm (here) + system_dlkm (GKI modules, other partition of super)
@@ -122,6 +125,9 @@ if [ -s "$R/modules.softdep" ] && [ -f "$D/modules.softdep" ]; then
     cat "$D/modules.softdep" - | awk '!seen[$0]++' > "$W/sd" || true
   cat "$W/sd" > "$D/modules.softdep"
 fi
+for mf in "$D"/modules.*; do
+  [ -f "$mf" ] && setfattr -n security.selinux -v u:object_r:vendor_file:s0 "$mf"
+done
 grep -qx i915.ko "$W/ours" && echo "   vendor_dlkm: i915 for older Intel GPUs: $(grep -c ' i915$' "$D/modules.alias") device IDs ($(wc -l < "$W/xeids") left to xe)"
 echo "   vendor_dlkm: +$(wc -l < "$W/ours") modules from our kernel build ($(cd "$D" && du -cm $(cat "$W/ours") | tail -1 | cut -f1) MiB), $(wc -l < "$W/dropped") left out by the ABI check"
 sed 's/^/     left out: /' "$W/dropped"

@@ -238,12 +238,9 @@ EOF
   setfattr -n security.selinux -v "$CFG" "$T/etc/power/perf_policy.json"
 fi
 
-# 4. Install active RAPL thermal configuration
-if [ -f "$T/etc/thermal/ruby/thermal_info_config.json" ]; then
-  cp "$T/etc/thermal/ruby/thermal_info_config.json" "$T/etc/thermal_info_config.json"
-  chown root:root "$T/etc/thermal_info_config.json"; chmod 0644 "$T/etc/thermal_info_config.json"
-  setfattr -n security.selinux -v "$CFG" "$T/etc/thermal_info_config.json"
-fi
+# 4. Note: Do NOT copy ruby/thermal_info_config.json to /etc/thermal_info_config.json
+# because ruby's thermal config expects ChromeOS EC temp sensors and causes vendor.thermal-hal to SIGABRT on Yoga!
+rm -f "$T/etc/thermal_info_config.json"
 
 # 4b. Pre-authorize host ADB public key for zero-touch wireless updates
 for k in /home/dimak/.android/adbkey.pub /root/.android/adbkey.pub; do
@@ -265,6 +262,7 @@ service vendor.churro.yoga /vendor/bin/churro-yoga
     user root
     group root input system
     capabilities NET_ADMIN SYS_ADMIN
+    disabled
 
 on post-fs-data
     # Seed host adb public key for pre-authorized wireless ADB
@@ -279,6 +277,14 @@ on early-init
     write /dev/cpuctl/foreground/cpu.uclamp.min 0
 
 on boot
+    # Stop crash-looping ChromeOS services before they trigger flags_health_check UPDATABLE_CRASHING
+    stop timberslide
+    stop hal_desktop_charge_control_default
+    stop sound_card_init
+    stop ec_crash_collector
+    stop vendor.biometrics.fingerprint-service.crosfp
+    stop vendor.google.desktop.vpd_executor.vpd-executor
+
     # Lenovo IdeaPad Quiet / Cool EC platform profile
     write /sys/firmware/acpi/platform_profile low-power
 
@@ -389,6 +395,9 @@ cat >> "$S/vendor_sepolicy.cil" <<EOF
 (allow touchpad_inhibitor sysfs_$V (dir (search getattr open read)))
 (allow touchpad_inhibitor sysfs_$V (file (getattr open read write)))
 (allow touchpad_inhibitor sysfs_$V (lnk_file (getattr read)))
+(allow touchpad_inhibitor sysfs_iio_devices (dir (search getattr open read)))
+(allow touchpad_inhibitor sysfs_iio_devices (file (getattr open read write)))
+(allow touchpad_inhibitor sysfs_iio_devices (lnk_file (getattr read)))
 (allow touchpad_inhibitor proc_$V (dir (search getattr open read)))
 (allow touchpad_inhibitor proc_$V (file (getattr open read)))
 EOF
@@ -396,6 +405,8 @@ if grep -q "adb_keys_file" "$S/vendor_sepolicy.cil" 2>/dev/null || grep -q "adb_
   cat >> "$S/vendor_sepolicy.cil" <<EOF
 (allow init_$V adb_keys_file_$V (dir (search getattr open read write add_name remove_name)))
 (allow init_$V adb_keys_file_$V (file (create getattr open read write append setattr unlink relabelfrom relabelto)))
+(allow vendor_init_$V adb_keys_file_$V (dir (search getattr open read write add_name remove_name)))
+(allow vendor_init_$V adb_keys_file_$V (file (create getattr open read write append setattr unlink relabelfrom relabelto)))
 EOF
 fi
 rm -f "$S"/precompiled_sepolicy "$S"/precompiled_sepolicy.*.sha256
