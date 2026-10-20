@@ -4,3 +4,27 @@
 # kunit test modules
 *_kunit
 *_test
+amdgpu
+radeon
+nouveau*
+ath*
+rtw*
+rtlwifi*
+mt7*
+brcm*
+b43*
+mlx*
+qla*
+cxgb*
+bnx*
+liquidio*
+nfp*
+ionic*
+octeontx*
+octeon_ep*
+hinic*
+funeth*
+prestera*
+sfc*
+qed*
+

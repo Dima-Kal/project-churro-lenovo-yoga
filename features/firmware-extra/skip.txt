@@ -1,3 +1,35 @@
 # Firmware never installed even if a driver lists it (shell globs, * matches across dirs).
 # NVIDIA GSP-RM 535: nouveau uses 570 when both are there (535 is only its fallback); ~60 MB.
 nvidia/*/gsp/*-535.113.01.bin
+nvidia/*
+amdgpu/*
+radeon/*
+matrox/*
+ath10k/*
+ath11k/*
+ath12k/*
+ath6k/*
+ath9k_htc/*
+brcm/*
+mediatek/*
+mrvl/*
+nxp/*
+qca/*
+qcom/*
+rtlwifi/*
+rtw88/*
+rtw89/*
+ti-connectivity/*
+cypress/*
+libertas/*
+mellanox/*
+netronome/*
+cxgb4/*
+qed/*
+bnx2x/*
+liquidio/*
+dpaa2/*
+i915/bmg*
+i915/dg1*
+i915/dg2*
+
