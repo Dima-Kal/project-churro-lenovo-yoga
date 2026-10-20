@@ -89,6 +89,32 @@ for f in regulatory.db regulatory.db.p7s; do
   install -m 0644 "$S/$RDB-$f" "$FW/$f"; echo "$FW/$f" >> "$M/added"
 done
 
+# Intel BE200 Wi-Fi 7: driver requests up to c105.ucode, while linux-firmware only ships c103.ucode
+src=""
+for p in "$FW/iwlwifi-gl-c0-fm-c0-c103.ucode" "$FW/intel/iwlwifi/iwlwifi-gl-c0-fm-c0-c103.ucode" "$C/intel/iwlwifi/iwlwifi-gl-c0-fm-c0-c103.ucode"; do
+  [ -f "$p" ] && { src="$p"; break; }
+done
+if [ -n "$src" ]; then
+  for ver in c104 c105; do
+    for dir in "$FW" "$FW/intel/iwlwifi"; do
+      mkdir -p "$dir"
+      dst="$dir/iwlwifi-gl-c0-fm-c0-$ver.ucode"
+      [ -e "$dst" ] || { cp "$src" "$dst"; echo "$dst" >> "$M/added"; }
+    done
+  done
+  pnvm_src=""
+  for p in "$FW/iwlwifi-gl-c0-fm-c0.pnvm" "$FW/intel/iwlwifi/iwlwifi-gl-c0-fm-c0.pnvm" "$C/intel/iwlwifi/iwlwifi-gl-c0-fm-c0.pnvm"; do
+    [ -f "$p" ] && { pnvm_src="$p"; break; }
+  done
+  if [ -n "$pnvm_src" ]; then
+    for dir in "$FW" "$FW/intel/iwlwifi"; do
+      mkdir -p "$dir"
+      dst="$dir/iwlwifi-gl-c0-fm-c0.pnvm"
+      [ -e "$dst" ] || { cp "$pnvm_src" "$dst"; echo "$dst" >> "$M/added"; }
+    done
+  fi
+fi
+
 # New files and dirs get the firmware dir's SELinux label (vendor_firmware_file).
 lbl=$(getfattr --absolute-names --only-values -n security.selinux "$FW")
 find "$FW" | while read -r x; do   # -h: symlinks (sof-bin) get their own label
