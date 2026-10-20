@@ -212,35 +212,43 @@ static void logcat_loop(void) {
     const char *cmd = "stream lids=0,1,3,4";  // main, radio, system, crash
     if (write(fd, cmd, strlen(cmd)) < 0) { close(fd); sleep(1); continue; }
     for (;;) {
-      ssize_t n = recv(fd, pkt, sizeof pkt - 1, s.used ? MSG_DONTWAIT : 0);
-      if (n < 0 && errno == EAGAIN) {  // drained: persist, then block for more
-        if (sink_flush(&s)) return;
-        continue;
-      }
-      if (n <= 0) break;  // logd went away: reconnect
-      struct logger_entry *h = (struct logger_entry *)pkt;
-      size_t hs = h->hdr_size >= 20 ? h->hdr_size : sizeof *h;
-      if ((size_t)n < hs + 2) continue;
-      pkt[n] = 0;
-      unsigned char *p = pkt + hs, *end = pkt + n;
-      const char *tag = (const char *)p + 1;
-      char *msg = (char *)p + 1 + strnlen(tag, end - p - 1) + 1;
-      if ((unsigned char *)msg > end) msg = (char *)end;
-      time_t t = h->sec;
-      struct tm tm;
-      gmtime_r(&t, &tm);
-      s.used += sprintf(s.buf + s.used, "%02d:%02d:%02d.%03u %5d %5u %c %s: ", tm.tm_hour, tm.tm_min,
-                        tm.tm_sec, h->nsec / 1000000, h->pid, h->tid, p[0] < 9 ? prio[p[0]] : '?', tag);
-      // one entry per line; continuation lines indented (an empty line would end the log text)
-      for (char *c = msg; *c && s.used < BUF_MAX + 8000; c++) {
-        if (*c == '\n') {
-          if (c[1]) s.used += sprintf(s.buf + s.used, "\n    ");
-        } else {
-          s.buf[s.used++] = *c;
+      int drained = 0;
+      ssize_t n = recv(fd, pkt, sizeof pkt - 1, MSG_DONTWAIT);
+      if (n < 0 && errno == EAGAIN) {
+        drained = 1;
+      } else if (n <= 0) {
+        break;  // logd went away: reconnect
+      } else {
+        struct logger_entry *h = (struct logger_entry *)pkt;
+        size_t hs = h->hdr_size >= 20 ? h->hdr_size : sizeof *h;
+        if ((size_t)n >= hs + 2) {
+          pkt[n] = 0;
+          unsigned char *p = pkt + hs, *end = pkt + n;
+          const char *tag = (const char *)p + 1;
+          char *msg = (char *)p + 1 + strnlen(tag, end - p - 1) + 1;
+          if ((unsigned char *)msg > end) msg = (char *)end;
+          time_t t = h->sec;
+          struct tm tm;
+          gmtime_r(&t, &tm);
+          s.used += sprintf(s.buf + s.used, "%02d:%02d:%02d.%03u %5d %5u %c %s: ", tm.tm_hour, tm.tm_min,
+                            tm.tm_sec, h->nsec / 1000000, h->pid, h->tid, p[0] < 9 ? prio[p[0]] : '?', tag);
+          // one entry per line; continuation lines indented (an empty line would end the log text)
+          for (char *c = msg; *c && s.used < BUF_MAX + 8000; c++) {
+            if (*c == '\n') {
+              if (c[1]) s.used += sprintf(s.buf + s.used, "\n    ");
+            } else {
+              s.buf[s.used++] = *c;
+            }
+          }
+          s.buf[s.used++] = '\n';
         }
       }
-      s.buf[s.used++] = '\n';
-      if (s.used >= BUF_MAX && sink_flush(&s)) return;
+      if (!drained && s.used < BUF_MAX) continue;
+      if (sink_flush(&s)) return;
+      if (drained) {
+        struct pollfd pf = {fd, POLLIN, 0};
+        poll(&pf, 1, -1);
+      }
     }
     close(fd);
   }

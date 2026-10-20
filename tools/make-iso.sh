@@ -246,6 +246,7 @@ done
 MODE="update"
 grep -q "churro.mode=shell" /proc/cmdline && MODE="shell"
 grep -q "churro.mode=logs" /proc/cmdline && MODE="logs"
+grep -q "churro.mode=wipe" /proc/cmdline && MODE="wipe"
 
 if [ "$MODE" = "shell" ]; then
   echo ">> Entering debug shell. Type 'exit' or 'reboot' when done."
@@ -420,14 +421,21 @@ while read -r lp off sz; do
   dd if="/payload/$lp.img" of="$T_SUP" bs=512 seek=$off_sec count=$count_sec conv=notrunc,fsync 2>/dev/null
 done < /payload/extents.txt
 
+if [ "$MODE" = "wipe" ]; then
+  echo ">> Factory reset requested: wiping userdata ($T_DAT) and metadata..."
+  T_META=$(tpart metadata 2>/dev/null || true)
+  [ -n "$T_META" ] && dd if=/dev/zero of="$T_META" bs=1048576 count=16 conv=fsync 2>/dev/null || true
+  dd if=/dev/zero of="$T_DAT" bs=1048576 count=32 conv=fsync 2>/dev/null || true
+fi
+
 sync
 echo ""
 echo "================================================================"
 echo ">> SUCCESS! Update applied successfully."
-echo ">> All userdata, apps, and settings on $T_DAT were preserved."
-echo ">> Rebooting in 5 seconds..."
+echo ">> Logs are hosted over HTTP above (if network connected)."
+echo ">> Rebooting in 8 seconds (or press Ctrl+C for shell)..."
 echo "================================================================"
-sleep 5
+sleep 8
 reboot -f
 EOF
 chmod 0755 "$INITRD_ROOT/init"
@@ -458,6 +466,12 @@ menuentry "Project Churro - Update Existing Disk (Preserve All Data)" {
 menuentry "Project Churro - View / Extract Crash Logs (boot.log & logcat.log)" {
     echo "Loading Churro kernel and log viewer..."
     linux /boot/kernel console=tty0 iommu.passthrough=1 efi_pstore.pstore_disable=1 churro.mode=logs
+    initrd /boot/initrd.img
+}
+
+menuentry "Project Churro - Update & Factory Reset (Wipe Userdata/Metadata)" {
+    echo "Loading Churro kernel and updater (with userdata wipe)..."
+    linux /boot/kernel console=tty0 iommu.passthrough=1 efi_pstore.pstore_disable=1 churro.mode=wipe
     initrd /boot/initrd.img
 }
 

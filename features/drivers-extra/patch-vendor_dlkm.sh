@@ -34,7 +34,7 @@ modinfo -F alias "$D/xe.ko" 2>/dev/null | sed -nE 's/^pci:v00008086d0000([0-9A-F
 # industrialio-triggered-buffer) or depend on them (hid-sensor-*): drop from $D so our build
 # of hid-sensor-* and intel-vbtn joins fresh, linked directly against vmlinux symbols in depmod.
 # NOTE: Do NOT use sed -i on $D/modules.* because sed -i creates a new inode and drops security.selinux!
-for bad in industrialio-triggered-buffer.ko kfifo_buf.ko "$D"/hid-sensor-*.ko "$D"/intel-vbtn.ko; do
+for bad in "$D"/industrialio-triggered-buffer.ko "$D"/kfifo_buf.ko "$D"/hid-sensor-*.ko "$D"/intel-vbtn.ko; do
   [ -e "$bad" ] || continue
   bn=$(basename "$bad")
   echo "   vendor_dlkm: replacing/dropping $bn (clearing duplicate/stale vmlinux dependencies)"

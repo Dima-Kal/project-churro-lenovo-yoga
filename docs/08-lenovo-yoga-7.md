@@ -93,7 +93,7 @@ This document details the hardware characteristics, root-cause analyses of Googl
 From the root of this repository:
 
 ```bash
-sudo bash churro.sh auto android-desktop_signed_recovery_image.bin out/churro.img --gfx mesa
+sudo bash churro.sh auto android-desktop_signed_recovery_image.bin out/churro.img
 ```
 
 Kernel and Mesa builds are automatically cached in `/var/cache/churro/`. Subsequent repacks take ~2–3 minutes.

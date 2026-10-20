@@ -116,6 +116,9 @@ cat >> "$S/vendor_sepolicy.cil" <<EOF
 ; churro-mixer (run by get_variant_audio) unmutes the card: /dev/snd/controlC*
 (allow get_variant_audio audio_device_$V (dir (search getattr)))
 (allow get_variant_audio audio_device_$V (chr_file (getattr open read write ioctl)))
+; allow servicemanager binder callbacks to hal_audio_default
+(allow servicemanager_$V hal_audio_default (binder (call transfer)))
+(allow hal_audio_default servicemanager_$V (binder (call transfer)))
 EOF
 rm -f "$S"/precompiled_sepolicy "$S"/precompiled_sepolicy.*.sha256
 echo "   vendor: audio-generic: configs for ${ids[*]} over ${boards[*]}"

@@ -240,7 +240,12 @@ fi
 
 # 4. Note: Do NOT copy ruby/thermal_info_config.json to /etc/thermal_info_config.json
 # because ruby's thermal config expects ChromeOS EC temp sensors and causes vendor.thermal-hal to SIGABRT on Yoga!
-rm -f "$T/etc/thermal_info_config.json"
+# Also remove pixel thermal HAL & symlinks .rc files so vendor.thermal-hal never starts or crash-loops.
+rm -f "$T/etc/thermal_info_config.json" \
+      "$T/etc/init/android.hardware.thermal-service.pixel.rc" \
+      "$T/etc/init/pixel-thermal-symlinks.rc" \
+      "$T/etc/init/thermal-profile-setter-service.rc" \
+      "$T/etc/vintf/manifest/android.hardware.thermal-service.pixel.xml"
 
 # 4b. Pre-authorize host ADB public key for zero-touch wireless updates
 for k in /home/dimak/.android/adbkey.pub /root/.android/adbkey.pub; do
@@ -284,6 +289,8 @@ on boot
     stop ec_crash_collector
     stop vendor.biometrics.fingerprint-service.crosfp
     stop vendor.google.desktop.vpd_executor.vpd-executor
+    stop vendor.thermal-hal
+    stop vendor.thermal.symlinks
 
     # Lenovo IdeaPad Quiet / Cool EC platform profile
     write /sys/firmware/acpi/platform_profile low-power
@@ -325,14 +332,16 @@ on boot
     write /sys/devices/system/cpu/cpu14/cpufreq/scaling_max_freq 2200000
     write /sys/devices/system/cpu/cpu15/cpufreq/scaling_max_freq 2200000
 
-    # Intel Iris Xe iGPU Frequency Cap: 850 MHz (halves GPU compositing power)
-    write /sys/class/drm/card0/device/tile0/gt0/freq0/max_freq 850
-
     # Start Yoga convertible & auto-rotation daemon (replaces stock touchpad-inhibitor)
     stop touchpad-inhibitor
     start vendor.churro.yoga
 
 on property:sys.boot_completed=1
+    # Intel Iris Xe iGPU Frequency Cap: 850 MHz (halves GPU compositing power, applied after boot completes)
+    write /sys/class/drm/card0/device/tile0/gt0/freq0/max_freq 850
+    write /sys/class/drm/card1/device/tile0/gt0/freq0/max_freq 850
+    write /sys/class/drm/card2/device/tile0/gt0/freq0/max_freq 850
+
     # Intel RAPL Package Power Caps: PL1 (sustained) = 8W, PL2 (burst) = 12W
     write /sys/class/powercap/intel-rapl:0/constraint_0_power_limit_uw 8000000
     write /sys/class/powercap/intel-rapl:0/constraint_1_power_limit_uw 12000000
