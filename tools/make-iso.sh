@@ -42,11 +42,12 @@ ISO_ROOT=$(mktemp -d /tmp/churro-iso.XXXX)
 INITRD_ROOT=$(mktemp -d /tmp/churro-initrd.XXXX)
 mkdir -p "$ISO_ROOT/boot/grub" "$INITRD_ROOT"/{bin,sbin,usr/bin,usr/sbin,proc,sys,dev,mnt,lib64,lib/x86_64-linux-gnu,lib/modules,payload}
 
-# 1. Extract Churro kernel from ESP
+# 1. Extract Churro kernel from ESP FIRST so xorriso places it at a low LBA before initrd.img
 log "extracting Churro kernel from EFI-SYSTEM"
 MNT_ESP=$(mktemp -d)
 mount -o ro "$P_ESP" "$MNT_ESP"
-cp "$MNT_ESP/churro/kernel" "$ISO_ROOT/boot/kernel"
+cp "$MNT_ESP/churro/kernel" "$ISO_ROOT/boot/00-kernel"
+ln -sf 00-kernel "$ISO_ROOT/boot/kernel"
 umount "$MNT_ESP"; rmdir "$MNT_ESP"
 
 # 2. Extract payload partitions into initrd
@@ -87,7 +88,7 @@ if [ -n "$PACK_STORAGE" ] && [ -f "$PACK_STORAGE/modules.load" ]; then
   done < "$PACK_STORAGE/modules.load"
 fi
 
-# Extract essential platform/USB/PCI modules from vendor_dlkm_a so USB-C/Thunderbolt & Alder Lake ports work in initrd
+# Extract essential platform/USB/PCI/Network modules from vendor_dlkm_a so USB-C/Thunderbolt & Ethernet adapters work in initrd
 MNT_DLKM=$(mktemp -d)
 read -r dlkm_off dlkm_sz < <(python3 "$HERE/lib/lpinfo.py" "$P_SUP" "vendor_dlkm_a")
 if mount -o ro,offset=$dlkm_off,sizelimit=$dlkm_sz "$P_SUP" "$MNT_DLKM" 2>/dev/null; then
@@ -96,7 +97,8 @@ if mount -o ro,offset=$dlkm_off,sizelimit=$dlkm_sz "$P_SUP" "$MNT_DLKM" 2>/dev/n
     pinctrl-intel.ko pinctrl-intel-platform.ko pinctrl-alderlake.ko pinctrl-tigerlake.ko pinctrl-meteorlake.ko \
     i2c-designware-core.ko i2c-designware-platform.ko i2c-ccgx-ucsi.ko i2c-designware-pci.ko \
     intel-xhci-usb-role-switch.ko ucsi_acpi.ko xhci-pci-renesas.ko \
-    rtsx_pci.ko rtsx_pci_sdmmc.ko rtsx_usb.ko rtsx_usb_sdmmc.ko; do
+    rtsx_pci.ko rtsx_pci_sdmmc.ko rtsx_usb.ko rtsx_usb_sdmmc.ko \
+    mii.ko mdio.ko usbnet.ko cdc_ether.ko cdc_ncm.ko r8152.ko r8153_ecm.ko ax88179_178a.ko asix.ko aqc111.ko r8169.ko igc.ko e1000e.ko; do
     if [ -f "$MNT_DLKM/lib/modules/$ko" ]; then
       cp "$MNT_DLKM/lib/modules/$ko" "$INITRD_ROOT/lib/modules/"
       grep -qx "$ko" "$INITRD_ROOT/lib/modules/modules.load" 2>/dev/null || echo "$ko" >> "$INITRD_ROOT/lib/modules/modules.load"
@@ -105,6 +107,23 @@ if mount -o ro,offset=$dlkm_off,sizelimit=$dlkm_sz "$P_SUP" "$MNT_DLKM" 2>/dev/n
   umount "$MNT_DLKM"
 fi
 rmdir "$MNT_DLKM" 2>/dev/null || true
+
+# Create udhcpc script for automatic DHCP configuration in initrd
+mkdir -p "$INITRD_ROOT/usr/share/udhcpc"
+cat > "$INITRD_ROOT/usr/share/udhcpc/default.script" <<'EOS'
+#!/bin/busybox sh
+case "$1" in
+  deconfig)
+    ip addr flush dev "$interface"
+    ip link set dev "$interface" up
+    ;;
+  bound|renew)
+    ip addr add "$ip/${mask:-24}" dev "$interface"
+    [ -n "$router" ] && ip route add default via "${router%% *}" dev "$interface" 2>/dev/null || true
+    ;;
+esac
+EOS
+chmod 0755 "$INITRD_ROOT/usr/share/udhcpc/default.script"
 
 # 4. Create init script
 cat > "$INITRD_ROOT/init" <<'EOF'
@@ -232,22 +251,45 @@ tpart() {
   case $TARGET_DISK in *[0-9]) echo "${TARGET_DISK}p$n" ;; *) echo "${TARGET_DISK}$n" ;; esac
 }
 
-if [ "$MODE" = "logs" ]; then
+extract_and_upload_logs() {
   T_LOG=$(tpart CHURRO-LOG || true)
-  if [ -z "$T_LOG" ]; then
-    echo ">> ERROR: No CHURRO-LOG partition found on $TARGET_DISK"
-    sh
-    reboot -f
-  fi
+  [ -n "$T_LOG" ] || return 0
   mkdir -p /mnt/logs /logs
-  mount -t vfat -o ro "$T_LOG" /mnt/logs
-  echo ">> Extracting clean logs into /logs/ ..."
+  mount -t vfat -o ro "$T_LOG" /mnt/logs 2>/dev/null || return 0
+  echo ">> Extracting crash logs from $T_LOG into /logs/ ..."
   for f in boot.log boot.prev.log logcat.log logcat.prev.log; do
     if [ -f "/mnt/logs/$f" ]; then
       awk 'NF == 0 {exit} {print}' "/mnt/logs/$f" > "/logs/$f"
-      echo "   /logs/$f: $(wc -l < "/logs/$f") lines"
+      echo "   /logs/$f: $(wc -l < "/logs/$f") lines ($(wc -c < "/logs/$f") bytes)"
     fi
   done
+  umount /mnt/logs 2>/dev/null || true
+
+  # Bring up Ethernet interface via DHCP and upload logs to build host (192.168.50.168:9999)
+  ip link set lo up 2>/dev/null || true
+  for net in /sys/class/net/*; do
+    ifn=$(basename "$net")
+    [ "$ifn" = "lo" ] && continue
+    echo ">> Bringing up network interface $ifn via DHCP..."
+    ip link set "$ifn" up 2>/dev/null || true
+    udhcpc -i "$ifn" -n -q -t 5 -T 2 2>/dev/null || true
+  done
+
+  MY_IP=$(ip -4 addr show 2>/dev/null | awk '/inet / && !/127.0.0.1/ {sub(/\/.*/, "", $2); print $2; exit}')
+  if [ -n "$MY_IP" ]; then
+    echo ">> Network active (IP: $MY_IP)"
+    httpd -p 8080 -h /logs 2>/dev/null || true
+    echo ">> Serving /logs at http://$MY_IP:8080/"
+    echo ">> Uploading logs to build host (192.168.50.168:9999)..."
+    tar -C /logs -czf - boot.log boot.prev.log logcat.log logcat.prev.log 2>/dev/null | nc -w 5 192.168.50.168 9999 && \
+      echo ">> Logs successfully transferred to build host!" || \
+      echo ">> Note: build host receiver on 192.168.50.168:9999 did not respond (you can still download from http://$MY_IP:8080/)"
+  fi
+}
+
+extract_and_upload_logs
+
+if [ "$MODE" = "logs" ]; then
   echo ""
   if [ -s /logs/boot.log ]; then
     echo "================ LAST 60 LINES OF boot.log ================"
@@ -262,10 +304,8 @@ if [ "$MODE" = "logs" ]; then
   fi
   echo ""
   echo ">> Clean logs are in /logs/{boot.log,boot.prev.log,logcat.log,logcat.prev.log}"
-  echo ">> Use 'less /logs/boot.log', 'grep -i selinux /logs/boot.log', or 'tail -n 100 /logs/logcat.log'"
   echo ">> Type 'exit' or 'reboot' when done."
   sh
-  umount /mnt/logs 2>/dev/null || true
   reboot -f
 fi
 
