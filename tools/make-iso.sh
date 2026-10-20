@@ -88,7 +88,7 @@ if [ -n "$PACK_STORAGE" ] && [ -f "$PACK_STORAGE/modules.load" ]; then
   done < "$PACK_STORAGE/modules.load"
 fi
 
-# Extract essential platform/USB/PCI/Network modules from vendor_dlkm_a so USB-C/Thunderbolt & Ethernet adapters work in initrd
+# Extract essential platform/USB/PCI modules from vendor_dlkm_a and network modules from kernel cache
 MNT_DLKM=$(mktemp -d)
 read -r dlkm_off dlkm_sz < <(python3 "$HERE/lib/lpinfo.py" "$P_SUP" "vendor_dlkm_a")
 if mount -o ro,offset=$dlkm_off,sizelimit=$dlkm_sz "$P_SUP" "$MNT_DLKM" 2>/dev/null; then
@@ -97,8 +97,7 @@ if mount -o ro,offset=$dlkm_off,sizelimit=$dlkm_sz "$P_SUP" "$MNT_DLKM" 2>/dev/n
     pinctrl-intel.ko pinctrl-intel-platform.ko pinctrl-alderlake.ko pinctrl-tigerlake.ko pinctrl-meteorlake.ko \
     i2c-designware-core.ko i2c-designware-platform.ko i2c-ccgx-ucsi.ko i2c-designware-pci.ko \
     intel-xhci-usb-role-switch.ko ucsi_acpi.ko xhci-pci-renesas.ko \
-    rtsx_pci.ko rtsx_pci_sdmmc.ko rtsx_usb.ko rtsx_usb_sdmmc.ko \
-    mii.ko mdio.ko usbnet.ko cdc_ether.ko cdc_ncm.ko r8152.ko r8153_ecm.ko ax88179_178a.ko asix.ko aqc111.ko r8169.ko igc.ko e1000e.ko; do
+    rtsx_pci.ko rtsx_pci_sdmmc.ko rtsx_usb.ko rtsx_usb_sdmmc.ko; do
     if [ -f "$MNT_DLKM/lib/modules/$ko" ]; then
       cp "$MNT_DLKM/lib/modules/$ko" "$INITRD_ROOT/lib/modules/"
       grep -qx "$ko" "$INITRD_ROOT/lib/modules/modules.load" 2>/dev/null || echo "$ko" >> "$INITRD_ROOT/lib/modules/modules.load"
@@ -107,6 +106,31 @@ if mount -o ro,offset=$dlkm_off,sizelimit=$dlkm_sz "$P_SUP" "$MNT_DLKM" 2>/dev/n
   umount "$MNT_DLKM"
 fi
 rmdir "$MNT_DLKM" 2>/dev/null || true
+
+# Copy USB/PCI Ethernet drivers from kernel cache (in dependency order: mii -> usbnet -> cdc_ether -> cdc_ncm/r8152/r8153_ecm/ax88179/asix)
+KMOD_DIR=$(ls -d /var/cache/churro/kernel-generic-*/modroot/lib/modules/*/kernel/drivers/net 2>/dev/null | head -1 || true)
+if [ -n "$KMOD_DIR" ]; then
+  for rel in \
+    mii.ko \
+    usb/usbnet.ko \
+    usb/cdc_ether.ko \
+    usb/cdc_ncm.ko \
+    usb/r8152.ko \
+    usb/r8153_ecm.ko \
+    usb/ax88179_178a.ko \
+    usb/asix.ko \
+    usb/aqc111.ko \
+    usb/rtl8150.ko \
+    ethernet/realtek/r8169.ko \
+    ethernet/intel/e1000e/e1000e.ko \
+    ethernet/intel/igc/igc.ko; do
+    if [ -f "$KMOD_DIR/$rel" ]; then
+      ko=$(basename "$rel")
+      cp "$KMOD_DIR/$rel" "$INITRD_ROOT/lib/modules/$ko"
+      grep -qx "$ko" "$INITRD_ROOT/lib/modules/modules.load" 2>/dev/null || echo "$ko" >> "$INITRD_ROOT/lib/modules/modules.load"
+    fi
+  done
+fi
 
 # Create udhcpc script for automatic DHCP configuration in initrd
 mkdir -p "$INITRD_ROOT/usr/share/udhcpc"
