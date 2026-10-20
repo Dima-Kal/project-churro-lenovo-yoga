@@ -48,7 +48,7 @@ source (\$root)/churro/env.cfg
 probe --set=puuid --part-uuid (\$root)
 set vcmd="$vcmd"
 
-set base="\$vcmd androidboot.boot_part_uuid=\$puuid androidboot.boot_source=\$boot_source"
+set base="\$vcmd printk.devkmsg=on ${CHURRO_DEBUG_ARGS:-} androidboot.boot_part_uuid=\$puuid androidboot.boot_source=\$boot_source"
 # debug: log on screen (fbcon) + serial, stop on errors instead of rebooting (panic=0; Android
 # init's fatal errors become panics; the image's lockup watchdogs only warn), plus feature debug
 # args (debug-log: boot.log on the CHURRO-LOG partition).

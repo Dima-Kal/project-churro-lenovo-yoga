@@ -110,6 +110,7 @@ sleep 2
 
 MODE="update"
 grep -q "churro.mode=shell" /proc/cmdline && MODE="shell"
+grep -q "churro.mode=logs" /proc/cmdline && MODE="logs"
 
 if [ "$MODE" = "shell" ]; then
   echo ">> Entering debug shell. Type 'exit' or 'reboot' when done."
@@ -150,16 +151,53 @@ if [ -z "$TARGET_DISK" ]; then
   reboot -f
 fi
 
-echo ""
-echo ">> Target disk selected: $TARGET_DISK"
-echo ">> ALL USERDATA ON THIS DISK WILL BE PRESERVED."
-echo ">> Applying updates (EFI-SYSTEM, vbmeta_a, super)..."
-
 tpart() {
   local n; n=$(/bin/sgdisk -p "$TARGET_DISK" | awk -v l="$1" '$NF == l {print $1; exit}')
   [ -n "$n" ] || { echo "error: missing partition $1 on $TARGET_DISK" >&2; return 1; }
   case $TARGET_DISK in *[0-9]) echo "${TARGET_DISK}p$n" ;; *) echo "${TARGET_DISK}$n" ;; esac
 }
+
+if [ "$MODE" = "logs" ]; then
+  T_LOG=$(tpart CHURRO-LOG || true)
+  if [ -z "$T_LOG" ]; then
+    echo ">> ERROR: No CHURRO-LOG partition found on $TARGET_DISK"
+    sh
+    reboot -f
+  fi
+  mkdir -p /mnt/logs /logs
+  mount -t vfat -o ro "$T_LOG" /mnt/logs
+  echo ">> Extracting clean logs into /logs/ ..."
+  for f in boot.log boot.prev.log logcat.log logcat.prev.log; do
+    if [ -f "/mnt/logs/$f" ]; then
+      awk 'NF == 0 {exit} {print}' "/mnt/logs/$f" > "/logs/$f"
+      echo "   /logs/$f: $(wc -l < "/logs/$f") lines"
+    fi
+  done
+  echo ""
+  if [ -s /logs/boot.log ]; then
+    echo "================ LAST 60 LINES OF boot.log ================"
+    tail -n 60 /logs/boot.log
+    echo "==========================================================="
+  elif [ -s /logs/boot.prev.log ]; then
+    echo "================ LAST 60 LINES OF boot.prev.log ================"
+    tail -n 60 /logs/boot.prev.log
+    echo "================================================================"
+  else
+    echo ">> Note: boot.log and boot.prev.log are empty."
+  fi
+  echo ""
+  echo ">> Clean logs are in /logs/{boot.log,boot.prev.log,logcat.log,logcat.prev.log}"
+  echo ">> Use 'less /logs/boot.log', 'grep -i selinux /logs/boot.log', or 'tail -n 100 /logs/logcat.log'"
+  echo ">> Type 'exit' or 'reboot' when done."
+  sh
+  umount /mnt/logs 2>/dev/null || true
+  reboot -f
+fi
+
+echo ""
+echo ">> Target disk selected: $TARGET_DISK"
+echo ">> ALL USERDATA ON THIS DISK WILL BE PRESERVED."
+echo ">> Applying updates (EFI-SYSTEM, vbmeta_a, super)..."
 
 T_ESP=$(tpart EFI-SYSTEM)
 T_VBM=$(tpart vbmeta_a)
@@ -232,6 +270,12 @@ fi
 menuentry "Project Churro - Update Existing Disk (Preserve All Data)" {
     echo "Loading Churro kernel and updater..."
     linux /boot/kernel console=tty0 churro.mode=update
+    initrd /boot/initrd.img
+}
+
+menuentry "Project Churro - View / Extract Crash Logs (boot.log & logcat.log)" {
+    echo "Loading Churro kernel and log viewer..."
+    linux /boot/kernel console=tty0 churro.mode=logs
     initrd /boot/initrd.img
 }
 

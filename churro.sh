@@ -7,6 +7,7 @@
 #        sudo ./churro.sh update  <churro.img> <disk> [--full]
 #             ./churro.sh ota     <churro.img> <device-ip[:port]>
 #        sudo ./churro.sh iso     <churro.img> <out.iso>
+#        sudo ./churro.sh logs    <disk|churro.img> [outdir]
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 
@@ -390,6 +391,49 @@ cmd_iso() {
   bash "$HERE/tools/make-iso.sh" "$img" "$out" "$@"
 }
 
+# logs <disk|churro.img> [outdir]:
+# Extract boot.log, boot.prev.log, logcat.log, and logcat.prev.log from the CHURRO-LOG partition,
+# stripping the pre-allocated blank lines so only actual log output is saved and displayed.
+cmd_logs() {
+  local src=$1 outdir=${2:-./logs}
+  need sgdisk awk
+  [ "$(id -u)" = 0 ] || die "run as root"
+  [ -e "$src" ] || die "not found: $src"
+
+  local dev=$src
+  if [ -f "$src" ]; then
+    LOOP=$(losetup -f --show -r -P "$src")
+    partprobe "$LOOP" 2>/dev/null || true
+    udevadm settle 2>/dev/null || sleep 1
+    dev=$LOOP
+  fi
+
+  local n lpart
+  n=$(sgdisk -p "$dev" | awk '$NF == "CHURRO-LOG" {print $1; exit}')
+  [ -n "$n" ] || die "no CHURRO-LOG partition on $src"
+  case $dev in *[0-9]) lpart="${dev}p$n" ;; *) lpart="${dev}$n" ;; esac
+
+  local mnt; mnt=$(mktemp -d)
+  mount -o ro "$lpart" "$mnt"
+  mkdir -p "$outdir"
+  local f
+  for f in boot.log boot.prev.log logcat.log logcat.prev.log; do
+    if [ -f "$mnt/$f" ]; then
+      # logger.c pre-allocates 64 MiB of newlines; log text ends at the first empty line
+      awk 'NF == 0 {exit} {print}' "$mnt/$f" > "$outdir/$f"
+      log "extracted $outdir/$f ($(wc -l < "$outdir/$f") lines)"
+    fi
+  done
+  umount "$mnt"; rmdir "$mnt"
+
+  if [ -s "$outdir/boot.log" ]; then
+    echo "=== Last 50 lines of $outdir/boot.log ==="
+    tail -n 50 "$outdir/boot.log"
+  else
+    log "note: boot.log is empty (check $outdir/boot.prev.log if the device rebooted)"
+  fi
+}
+
 # auto <in.bin> <out.img> [--gfx auto|native|nouveau|mesa|soft] [--kernel-profile generic]:
 # prepare everything (tools/prepare.sh) and build with the recommended defaults.
 # --gfx auto (default): the boot menu picks the graphics stack from the GPUs it finds (esp.sh).
@@ -414,7 +458,7 @@ cmd_auto() {
   cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --vexemu "$vexemu" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,gfx-minigbm,drivers-extra,audio-generic,lenovo-yoga,debug-log$xfeat" "${margs[@]}"
 }
 
-case ${1:-} in auto|build|install|update|ota|iso) deps_ensure ;; esac
+case ${1:-} in auto|build|install|update|ota|iso|logs) deps_ensure ;; esac
 case ${1:-} in
   auto) shift; [ $# -ge 2 ] || die "usage: churro.sh auto <in.bin> <out.img> [--gfx auto|native|nouveau|mesa|soft]"; cmd_auto "$@" ;;
   build) shift; [ $# -ge 2 ] || die "usage: churro.sh build <in.bin> <out.img> [opts]"; cmd_build "$@" ;;
@@ -422,5 +466,6 @@ case ${1:-} in
   update) shift; [ $# -ge 2 ] || die "usage: churro.sh update <churro.img> <disk> [--full]"; cmd_update "$@" ;;
   ota) shift; [ $# -eq 2 ] || die "usage: churro.sh ota <churro.img> <device-ip[:port]>"; cmd_ota "$@" ;;
   iso) shift; [ $# -ge 2 ] || die "usage: churro.sh iso <churro.img> <out.iso>"; cmd_iso "$@" ;;
-  *) sed -n '2,9p' "$0"; exit 1 ;;
+  logs) shift; [ $# -ge 1 ] || die "usage: churro.sh logs <disk|churro.img> [outdir]"; cmd_logs "$@" ;;
+  *) sed -n '2,10p' "$0"; exit 1 ;;
 esac

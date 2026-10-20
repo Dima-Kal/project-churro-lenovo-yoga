@@ -13,9 +13,10 @@ T=$1; F=$(dirname "$0"); S=$T/etc/selinux
 CFG=u:object_r:vendor_configs_file:s0
 
 # 1. Compile churro-yoga daemon
+# Labelled touchpad_inhibitor_exec so init transitions into touchpad_inhibitor domain
 ${CC:-cc} -static -Os -s -Wall -Werror -o "$T/bin/churro-yoga" "$F/churro-yoga.c"
 chown root:2000 "$T/bin/churro-yoga"; chmod 0755 "$T/bin/churro-yoga"
-setfattr -n security.selinux -v u:object_r:vendor_toolbox_exec:s0 "$T/bin/churro-yoga"
+setfattr -n security.selinux -v u:object_r:touchpad_inhibitor_exec:s0 "$T/bin/churro-yoga"
 
 # 2. Generate 16-thread hybrid powerhint.json
 cat > "$F/powerhint-yoga16.json" <<'EOF'
@@ -321,7 +322,8 @@ on boot
     # Intel Iris Xe iGPU Frequency Cap: 850 MHz (halves GPU compositing power)
     write /sys/class/drm/card0/device/tile0/gt0/freq0/max_freq 850
 
-    # Start Yoga convertible & auto-rotation daemon
+    # Start Yoga convertible & auto-rotation daemon (replaces stock touchpad-inhibitor)
+    stop touchpad-inhibitor
     start vendor.churro.yoga
 
 on property:sys.boot_completed=1
@@ -371,18 +373,29 @@ chown root:root "$PWR_RC"; chmod 0644 "$PWR_RC"; setfattr -n security.selinux -v
 # 6. SELinux policy rules
 V=$(cat "$S/plat_sepolicy_vers.txt")
 cat >> "$S/vendor_sepolicy.cil" <<EOF
-; Project Churro lenovo-yoga: allow init / vendor_toolbox to control uinput, sysfs, inputs, iio
-(allow vendor_init_$V sysfs_$V (file (getattr open write)))
-(allow init_$V uinput_device_$V (chr_file (getattr open read write ioctl)))
+; Project Churro lenovo-yoga: SELinux rules for churro-yoga (touchpad_inhibitor domain) & init
+(typepermissive touchpad_inhibitor)
+(allow vendor_init_$V sysfs_$V (file (getattr open read write)))
+(allow init_$V sysfs_$V (file (getattr open read write)))
+(allow init_$V uhid_device_$V (chr_file (getattr open read write ioctl)))
 (allow init_$V input_device_$V (chr_file (getattr open read write ioctl)))
 (allow init_$V input_device_$V (dir (search getattr open read)))
-(allow init_$V sysfs_$V (file (getattr open read write)))
 (allow init_$V iio_device_$V (chr_file (getattr open read write ioctl)))
+(allow touchpad_inhibitor self (capability (dac_override dac_read_search net_admin sys_admin)))
+(allow touchpad_inhibitor uhid_device_$V (chr_file (getattr open read write ioctl)))
+(allow touchpad_inhibitor input_device_$V (dir (search getattr open read)))
+(allow touchpad_inhibitor input_device_$V (chr_file (getattr open read write ioctl)))
+(allow touchpad_inhibitor iio_device_$V (chr_file (getattr open read write ioctl)))
+(allow touchpad_inhibitor sysfs_$V (dir (search getattr open read)))
+(allow touchpad_inhibitor sysfs_$V (file (getattr open read write)))
+(allow touchpad_inhibitor sysfs_$V (lnk_file (getattr read)))
+(allow touchpad_inhibitor proc_$V (dir (search getattr open read)))
+(allow touchpad_inhibitor proc_$V (file (getattr open read)))
 EOF
 if grep -q "adb_keys_file" "$S/vendor_sepolicy.cil" 2>/dev/null || grep -q "adb_keys_file" "$S/plat_pub_versioned.cil" 2>/dev/null; then
   cat >> "$S/vendor_sepolicy.cil" <<EOF
-(allow init_$V adb_keys_file_$V (dir (search getattr open read write add_name)))
-(allow init_$V adb_keys_file_$V (file (create getattr open read write setattr relabelfrom relabelto)))
+(allow init_$V adb_keys_file_$V (dir (search getattr open read write add_name remove_name)))
+(allow init_$V adb_keys_file_$V (file (create getattr open read write append setattr unlink relabelfrom relabelto)))
 EOF
 fi
 rm -f "$S"/precompiled_sepolicy "$S"/precompiled_sepolicy.*.sha256
