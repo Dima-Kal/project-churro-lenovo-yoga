@@ -78,12 +78,13 @@ for lib in /lib/x86_64-linux-gnu/{libuuid.so.1,libpopt.so.0,libstdc++.so.6,libm.
   [ -f "$lib" ] && cp "$lib" "$INITRD_ROOT/lib/x86_64-linux-gnu/"
 done
 
-# Copy extra storage modules if cached
-KMOD_DIR=$(ls -d /var/cache/churro/kernel-generic-*/modroot/lib/modules/*/ 2>/dev/null | head -1 || true)
-if [ -n "$KMOD_DIR" ]; then
-  find "$KMOD_DIR" -name "*.ko" | grep -E "(ahci|sdhci|virtio_pci)" | while read -r ko; do
-    cp "$ko" "$INITRD_ROOT/lib/modules/" 2>/dev/null || true
-  done
+# Copy extra storage modules in dependency order if cached
+PACK_STORAGE=$(ls -d /var/cache/churro/packs-generic-*/storage 2>/dev/null | head -1 || true)
+if [ -n "$PACK_STORAGE" ] && [ -f "$PACK_STORAGE/modules.load" ]; then
+  cp "$PACK_STORAGE"/modules.load "$INITRD_ROOT/lib/modules/modules.load"
+  while read -r ko; do
+    [ -n "$ko" ] && [ -f "$PACK_STORAGE/$ko" ] && cp "$PACK_STORAGE/$ko" "$INITRD_ROOT/lib/modules/"
+  done < "$PACK_STORAGE/modules.load"
 fi
 
 # 4. Create init script
@@ -94,7 +95,10 @@ export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+# Android GKI kernels have CONFIG_DEVTMPFS disabled! Mount tmpfs on /dev and populate with mdev -s
+mount -t tmpfs tmpfs /dev
+mkdir -p /dev/pts /dev/shm
+mdev -s 2>/dev/null || true
 
 echo ""
 echo "================================================================"
@@ -102,11 +106,50 @@ echo "    Project Churro - UEFI Updater & Recovery Tool               "
 echo "================================================================"
 echo ""
 
-# Load storage modules if present
-for m in /lib/modules/*.ko; do
-  [ -f "$m" ] && insmod "$m" 2>/dev/null || true
-done
+# Load storage modules in dependency order if present
+if [ -f /lib/modules/modules.load ]; then
+  while read -r ko; do
+    [ -n "$ko" ] && [ -f "/lib/modules/$ko" ] && insmod "/lib/modules/$ko" 2>/dev/null || true
+  done < /lib/modules/modules.load
+fi
 sleep 2
+mdev -s 2>/dev/null || true
+
+# Wait up to 8 seconds for USB/NVMe disks to finish enumerating and create /dev nodes
+FOUND_DISKS=""
+for attempt in 1 2 3 4 5 6 7 8; do
+  mdev -s 2>/dev/null || true
+  for b in /sys/class/block/*; do
+    [ -e "$b/dev" ] || continue
+    bn=$(basename "$b")
+    if [ ! -b "/dev/$bn" ]; then
+      maj_min=$(cat "$b/dev")
+      maj=${maj_min%:*}
+      min=${maj_min#*:}
+      mknod "/dev/$bn" b "$maj" "$min" 2>/dev/null || true
+    fi
+  done
+
+  for d in /sys/block/sd* /sys/block/nvme*n1 /sys/block/mmcblk* /sys/block/vd*; do
+    [ -e "$d" ] || continue
+    bn=$(basename "$d")
+    dev="/dev/$bn"
+    [ -b "$dev" ] || continue
+
+    # Check if disk has Churro partition layout via sysfs uevent PARTNAME or sgdisk
+    if grep -q "PARTNAME=EFI-SYSTEM" "$d"/"$bn"*/uevent 2>/dev/null && grep -q "PARTNAME=userdata" "$d"/"$bn"*/uevent 2>/dev/null; then
+      FOUND_DISKS="$FOUND_DISKS $dev"
+    else
+      gpt_names=$(/bin/sgdisk -p "$dev" 2>/dev/null | awk '{print $NF}' || true)
+      if echo "$gpt_names" | grep -qx "EFI-SYSTEM" && echo "$gpt_names" | grep -qx "userdata"; then
+        FOUND_DISKS="$FOUND_DISKS $dev"
+      fi
+    fi
+  done
+
+  [ -n "$FOUND_DISKS" ] && break
+  sleep 1
+done
 
 MODE="update"
 grep -q "churro.mode=shell" /proc/cmdline && MODE="shell"
@@ -119,20 +162,6 @@ if [ "$MODE" = "shell" ]; then
 fi
 
 echo ">> Searching for disks with an existing Churro installation..."
-FOUND_DISKS=""
-
-for d in /sys/block/sd* /sys/block/nvme*n1 /sys/block/mmcblk*; do
-  [ -e "$d" ] || continue
-  bn=$(basename "$d")
-  dev="/dev/$bn"
-  [ -b "$dev" ] || continue
-
-  # Check if disk has Churro partition layout (EFI-SYSTEM and userdata)
-  gpt_names=$(/bin/sgdisk -p "$dev" 2>/dev/null | awk '{print $NF}' || true)
-  if echo "$gpt_names" | grep -qx "EFI-SYSTEM" && echo "$gpt_names" | grep -qx "userdata"; then
-    FOUND_DISKS="$FOUND_DISKS $dev"
-  fi
-done
 
 TARGET_DISK=""
 for fd in $FOUND_DISKS; do
@@ -143,7 +172,8 @@ done
 if [ -z "$TARGET_DISK" ]; then
   echo ""
   echo ">> ERROR: No disk with an existing Churro installation was found!"
-  echo "   Available block devices:"
+  echo "   Available block devices in /sys/class/block:"
+  ls -1 /sys/class/block/ 2>/dev/null | tr '\n' ' '; echo ""
   ls -l /dev/sd* /dev/nvme* 2>/dev/null || true
   echo ""
   echo ">> Dropping to rescue shell..."
@@ -152,8 +182,16 @@ if [ -z "$TARGET_DISK" ]; then
 fi
 
 tpart() {
-  local n; n=$(/bin/sgdisk -p "$TARGET_DISK" | awk -v l="$1" '$NF == l {print $1; exit}')
-  [ -n "$n" ] || { echo "error: missing partition $1 on $TARGET_DISK" >&2; return 1; }
+  local want=$1 p
+  for p in /sys/class/block/$(basename "$TARGET_DISK")*; do
+    [ -f "$p/uevent" ] || continue
+    if grep -qx "PARTNAME=$want" "$p/uevent" 2>/dev/null; then
+      echo "/dev/$(basename "$p")"
+      return 0
+    fi
+  done
+  local n; n=$(/bin/sgdisk -p "$TARGET_DISK" | awk -v l="$want" '$NF == l {print $1; exit}')
+  [ -n "$n" ] || { echo "error: missing partition $want on $TARGET_DISK" >&2; return 1; }
   case $TARGET_DISK in *[0-9]) echo "${TARGET_DISK}p$n" ;; *) echo "${TARGET_DISK}$n" ;; esac
 }
 
