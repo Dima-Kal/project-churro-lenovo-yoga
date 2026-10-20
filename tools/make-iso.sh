@@ -251,7 +251,7 @@ tpart() {
   case $TARGET_DISK in *[0-9]) echo "${TARGET_DISK}p$n" ;; *) echo "${TARGET_DISK}$n" ;; esac
 }
 
-extract_and_upload_logs() {
+extract_and_serve_logs() {
   T_LOG=$(tpart CHURRO-LOG || true)
   [ -n "$T_LOG" ] || return 0
   mkdir -p /mnt/logs /logs
@@ -265,7 +265,22 @@ extract_and_upload_logs() {
   done
   umount /mnt/logs 2>/dev/null || true
 
-  # Bring up Ethernet interface via DHCP and upload logs to build host (192.168.50.168:9999)
+  cat > /logs/index.html <<'EOH'
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Project Churro Crash Logs</title>
+<style>body{font-family:monospace;background:#111;color:#eee;padding:20px} a{color:#4da6ff;font-size:18px;display:block;margin:10px 0}</style>
+</head>
+<body>
+<h2>Project Churro - Crash &amp; Boot Logs</h2>
+<a href="boot.log">boot.log (Current Boot Kernel + Init Log)</a>
+<a href="boot.prev.log">boot.prev.log (Previous Boot Kernel + Init Log)</a>
+<a href="logcat.log">logcat.log (Current Boot Android Logcat)</a>
+<a href="logcat.prev.log">logcat.prev.log (Previous Boot Android Logcat)</a>
+</body></html>
+EOH
+
+  # Bring up Ethernet interface via DHCP and start BusyBox HTTP server on port 80
   ip link set lo up 2>/dev/null || true
   for net in /sys/class/net/*; do
     ifn=$(basename "$net")
@@ -277,34 +292,34 @@ extract_and_upload_logs() {
 
   MY_IP=$(ip -4 addr show 2>/dev/null | awk '/inet / && !/127.0.0.1/ {sub(/\/.*/, "", $2); print $2; exit}')
   if [ -n "$MY_IP" ]; then
-    echo ">> Network active (IP: $MY_IP)"
-    httpd -p 8080 -h /logs 2>/dev/null || true
-    echo ">> Serving /logs at http://$MY_IP:8080/"
-    echo ">> Uploading logs to build host (192.168.50.168:9999)..."
-    tar -C /logs -czf - boot.log boot.prev.log logcat.log logcat.prev.log 2>/dev/null | nc -w 5 192.168.50.168 9999 && \
-      echo ">> Logs successfully transferred to build host!" || \
-      echo ">> Note: build host receiver on 192.168.50.168:9999 did not respond (you can still download from http://$MY_IP:8080/)"
+    httpd -p 80 -h /logs 2>/dev/null || httpd -p 8080 -h /logs 2>/dev/null || true
+    echo ""
+    echo "================================================================"
+    echo ">> HTTP Log Server Active: http://$MY_IP/"
+    echo "   - http://$MY_IP/boot.log"
+    echo "   - http://$MY_IP/boot.prev.log"
+    echo "   - http://$MY_IP/logcat.log"
+    echo "   - http://$MY_IP/logcat.prev.log"
+    echo "================================================================"
   fi
 }
 
-extract_and_upload_logs
-
 if [ "$MODE" = "logs" ]; then
+  extract_and_serve_logs
   echo ""
   if [ -s /logs/boot.log ]; then
-    echo "================ LAST 60 LINES OF boot.log ================"
-    tail -n 60 /logs/boot.log
+    echo "================ LAST 40 LINES OF boot.log ================"
+    tail -n 40 /logs/boot.log
     echo "==========================================================="
   elif [ -s /logs/boot.prev.log ]; then
-    echo "================ LAST 60 LINES OF boot.prev.log ================"
-    tail -n 60 /logs/boot.prev.log
+    echo "================ LAST 40 LINES OF boot.prev.log ================"
+    tail -n 40 /logs/boot.prev.log
     echo "================================================================"
   else
     echo ">> Note: boot.log and boot.prev.log are empty."
   fi
   echo ""
-  echo ">> Clean logs are in /logs/{boot.log,boot.prev.log,logcat.log,logcat.prev.log}"
-  echo ">> Type 'exit' or 'reboot' when done."
+  echo ">> Logs are hosted over HTTP above. Press Enter or type 'reboot' when done."
   sh
   reboot -f
 fi
