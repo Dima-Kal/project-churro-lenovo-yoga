@@ -30,6 +30,19 @@ modinfo -F alias "$D/xe.ko" 2>/dev/null | sed -nE 's/^pci:v00008086d0000([0-9A-F
 [ -s "$W/xeids" ] || { echo "drivers-extra: no device IDs in $D/xe.ko - refusing to ship i915 unfiltered" >&2; exit 1; }
 [ -z "${CHURRO_XE_IDS:-}" ] || cp "$W/xeids" "$CHURRO_XE_IDS"
 
+# Modules in Google's vendor_dlkm that conflict with vmlinux built-ins (kfifo_buf,
+# industrialio-triggered-buffer) or depend on them (hid-sensor-*): drop from $D so our build
+# of hid-sensor-* and intel-vbtn joins fresh, linked directly against vmlinux symbols in depmod.
+for bad in industrialio-triggered-buffer.ko kfifo_buf.ko "$D"/hid-sensor-*.ko "$D"/intel-vbtn.ko; do
+  [ -e "$bad" ] || continue
+  bn=$(basename "$bad")
+  echo "   vendor_dlkm: replacing/dropping $bn (clearing duplicate/stale vmlinux dependencies)"
+  rm -f "$D/$bn"
+  sed -i "s# */vendor/lib/modules/$bn##g" "$D"/modules.dep 2>/dev/null || true
+  sed -i "\#^/vendor/lib/modules/$bn:#d" "$D"/modules.dep 2>/dev/null || true
+  sed -i "/^$bn\$/d" "$D"/modules.load* 2>/dev/null || true
+done
+
 # the image's modules: vendor_dlkm (here) + system_dlkm (GKI modules, other partition of super)
 read -r off size < <(python3 "$CHURRO_HERE/lib/lpinfo.py" "$CHURRO_SUPER" system_dlkm_a)
 L=$(losetup -f --show -r -o "$off" --sizelimit "$size" "$CHURRO_SUPER")
