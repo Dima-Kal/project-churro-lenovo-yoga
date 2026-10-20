@@ -244,6 +244,16 @@ if [ -f "$T/etc/thermal/ruby/thermal_info_config.json" ]; then
   setfattr -n security.selinux -v "$CFG" "$T/etc/thermal_info_config.json"
 fi
 
+# 4b. Pre-authorize host ADB public key for zero-touch wireless updates
+for k in /home/dimak/.android/adbkey.pub /root/.android/adbkey.pub; do
+  if [ -f "$k" ]; then
+    cp "$k" "$T/etc/churro_adbkey.pub"
+    chown root:root "$T/etc/churro_adbkey.pub"; chmod 0644 "$T/etc/churro_adbkey.pub"
+    setfattr -n security.selinux -v "$CFG" "$T/etc/churro_adbkey.pub"
+    break
+  fi
+done
+
 # 5. Create /vendor/etc/init/churro-power.rc
 PWR_RC=$T/etc/init/churro-power.rc
 cat > "$PWR_RC" <<'EOF'
@@ -254,6 +264,14 @@ service vendor.churro.yoga /vendor/bin/churro-yoga
     user root
     group root input system
     capabilities NET_ADMIN SYS_ADMIN
+
+on post-fs-data
+    # Seed host adb public key for pre-authorized wireless ADB
+    mkdir /data/misc/adb 0750 system shell
+    copy /vendor/etc/churro_adbkey.pub /data/misc/adb/adb_keys
+    chmod 0640 /data/misc/adb/adb_keys
+    chown system shell /data/misc/adb/adb_keys
+    restorecon /data/misc/adb/adb_keys
 
 on early-init
     write /dev/cpuctl/top-app/cpu.uclamp.min 0
@@ -341,6 +359,12 @@ on property:sys.boot_completed=1
     stop ec_crash_collector
     stop vendor.biometrics.fingerprint-service.crosfp
     stop vendor.google.desktop.vpd_executor.vpd-executor
+
+    # Enable Wireless ADB on port 5555 for zero-touch churro.sh ota updates
+    setprop service.adb.tcp.port 5555
+    setprop persist.adb.tcp.port 5555
+    stop adbd
+    start adbd
 EOF
 chown root:root "$PWR_RC"; chmod 0644 "$PWR_RC"; setfattr -n security.selinux -v "$CFG" "$PWR_RC"
 
@@ -355,6 +379,12 @@ cat >> "$S/vendor_sepolicy.cil" <<EOF
 (allow init_$V sysfs_$V (file (getattr open read write)))
 (allow init_$V iio_device_$V (chr_file (getattr open read write ioctl)))
 EOF
+if grep -q "adb_keys_file" "$S/vendor_sepolicy.cil" 2>/dev/null || grep -q "adb_keys_file" "$S/plat_pub_versioned.cil" 2>/dev/null; then
+  cat >> "$S/vendor_sepolicy.cil" <<EOF
+(allow init_$V adb_keys_file_$V (dir (search getattr open read write add_name)))
+(allow init_$V adb_keys_file_$V (file (create getattr open read write setattr relabelfrom relabelto)))
+EOF
+fi
 rm -f "$S"/precompiled_sepolicy "$S"/precompiled_sepolicy.*.sha256
 
 echo "   vendor: lenovo-yoga: installed churro-yoga daemon, ultra-cool 8W/12W power profile & 16-thread cpusets"
