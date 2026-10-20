@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Project Churro - make a Googlebook OS recovery image bootable on generic UEFI PCs.
-# Usage: sudo ./churro.sh auto  <recovery.bin> <out.img> [--gfx auto|native|nouveau|mesa|soft] [--packs virt,gpu,storage,wifi]
-#        sudo ./churro.sh build <recovery.bin> <out.img> [--kernel dir] [--modules <pack dir>]...
-#                               [--features a,b] [--boot-source external|internal]
+# Usage: sudo ./churro.sh auto    <recovery.bin> <out.img> [--gfx auto|native|nouveau|mesa|soft] [--packs virt,gpu,storage,wifi]
+#        sudo ./churro.sh build   <recovery.bin> <out.img> [--kernel dir] [--modules <pack dir>]...
+#                                 [--features a,b] [--boot-source external|internal]
 #        sudo ./churro.sh install <churro.img> <disk>
+#        sudo ./churro.sh update  <churro.img> <disk> [--full]
+#             ./churro.sh ota     <churro.img> <device-ip[:port]>
+#        sudo ./churro.sh iso     <churro.img> <out.iso>
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 
@@ -243,6 +246,150 @@ cmd_install() {
   log "done. Reboot, pick the disk in the UEFI boot menu (Secure Boot off)."
 }
 
+# update <churro.img> <target disk> [--full]:
+# Update OS partitions (EFI-SYSTEM, vbmeta_a, and super) in place WITHOUT touching userdata or metadata.
+cmd_update() {
+  local img=$1 dst=$2 full=false
+  [ "${3:-}" = "--full" ] && full=true
+  need sgdisk dd partprobe python3
+  [ "$(id -u)" = 0 ] || die "run as root"
+  [ -f "$img" ] || die "image not found: $img"
+  [ -b "$dst" ] || die "$dst is not a block device"
+
+  local tpart; tpart() {
+    local n; n=$(sgdisk -p "$dst" | awk -v l="$1" '$NF == l {print $1; exit}')
+    [ -n "$n" ] || die "target disk $dst has no '$1' partition (run 'churro.sh install' first)"
+    case $dst in *[0-9]) echo "${dst}p$n" ;; *) echo "${dst}$n" ;; esac
+  }
+
+  local t_esp t_vbm t_sup t_dat
+  t_esp=$(tpart EFI-SYSTEM); t_vbm=$(tpart vbmeta_a); t_sup=$(tpart super); t_dat=$(tpart userdata)
+  log "updating $dst in-place (preserving userdata on $t_dat)"
+
+  local bsrc=usb mnt; mnt=$(mktemp -d)
+  if mount -o ro "$t_esp" "$mnt" 2>/dev/null; then
+    grep -q 'boot_source=internal' "$mnt/churro/env.cfg" 2>/dev/null && bsrc=internal
+    umount "$mnt"
+  fi
+
+  LOOP=$(losetup -f --show -r -P "$img")
+  partprobe "$LOOP" 2>/dev/null || true
+  udevadm settle 2>/dev/null || sleep 1
+
+  log "updating vbmeta_a and EFI-SYSTEM (boot_source=$bsrc)"
+  dd if="$(part vbmeta_a)" of="$t_vbm" bs=64K conv=fsync status=none
+  dd if="$(part EFI-SYSTEM)" of="$t_esp" bs=1M conv=fsync status=none
+  if [ "$bsrc" = internal ]; then
+    mount "$t_esp" "$mnt"
+    sed -i 's/^set boot_source=.*/set boot_source=internal/' "$mnt/churro/env.cfg"
+    umount "$mnt"
+  fi
+  rmdir "$mnt"
+
+  local s_sup; s_sup=$(part super)
+  if [ "$full" = true ]; then
+    log "updating full super partition"
+    dd if="$s_sup" of="$t_sup" bs=4M conv=fsync,sparse status=progress
+  else
+    log "updating super LP metadata (1 MiB) + modified logical partitions (vendor_dlkm_a, vendor_a, system_ext_a)"
+    dd if="$s_sup" of="$t_sup" bs=1M count=1 conv=fsync,notrunc status=none
+    local lp off sz
+    for lp in vendor_dlkm_a vendor_a system_ext_a; do
+      read -r off sz < <(python3 "$HERE/lib/lpinfo.py" "$s_sup" "$lp")
+      local off_mb=$((off / 1048576)) count_mb=$(( (sz + 1048575) / 1048576 ))
+      if [ $((off % 1048576)) -eq 0 ]; then
+        log "  -> $lp ($count_mb MiB at offset ${off_mb} MiB)"
+        dd if="$s_sup" of="$t_sup" bs=1M skip="$off_mb" seek="$off_mb" count="$count_mb" conv=fsync,notrunc status=none
+      else
+        local off_sec=$((off / 512)) count_sec=$(( (sz + 511) / 512 ))
+        log "  -> $lp ($((sz >> 20)) MiB at sector $off_sec)"
+        dd if="$s_sup" of="$t_sup" bs=512 skip="$off_sec" seek="$off_sec" count="$count_sec" conv=fsync,notrunc status=none
+      fi
+    done
+  fi
+  sync
+  log "update complete! All userdata on $t_dat preserved."
+}
+
+# ota <churro.img> <ip[:port]>:
+# Push updated EFI-SYSTEM, vbmeta_a, and super logical partitions over ADB Wi-Fi without unplugging USB.
+cmd_ota() {
+  local img=$1 target=$2
+  need adb python3 dd
+  [ "$(id -u)" = 0 ] || die "run as root (needed for loop-mounting $img)"
+  [ -f "$img" ] || die "image not found: $img"
+  case $target in *:*) ;; *) target="$target:5555" ;; esac
+
+  log "connecting to $target via ADB"
+  adb connect "$target"
+  adb -s "$target" wait-for-device
+  adb -s "$target" root >/dev/null 2>&1 || true
+  sleep 1
+  adb connect "$target" >/dev/null 2>&1 || true
+  adb -s "$target" wait-for-device
+
+  LOOP=$(losetup -f --show -r -P "$img")
+  partprobe "$LOOP" 2>/dev/null || true
+  udevadm settle 2>/dev/null || sleep 1
+
+  local W; W=$(mktemp -d /tmp/churro-ota.XXXX)
+  local s_sup; s_sup=$(part super)
+
+  log "extracting update payload from $img"
+  dd if="$(part EFI-SYSTEM)" of="$W/esp.img" bs=1M status=none
+  dd if="$(part vbmeta_a)" of="$W/vbmeta.img" bs=64K status=none
+  dd if="$s_sup" of="$W/super_meta.bin" bs=1M count=1 status=none
+
+  cat > "$W/apply.sh" <<'EOS'
+#!/system/bin/sh
+set -e
+DIR=/data/local/tmp/churro_ota
+BYNAME=$(find /dev/block/platform -name by-name 2>/dev/null | head -n 1)
+[ -n "$BYNAME" ] || BYNAME=/dev/block/by-name
+
+echo ">> Writing vbmeta_a and EFI-SYSTEM..."
+dd if="$DIR/vbmeta.img" of="$BYNAME/vbmeta_a" bs=65536 conv=fsync 2>/dev/null
+dd if="$DIR/esp.img" of="$BYNAME/EFI-SYSTEM" bs=1048576 conv=fsync 2>/dev/null
+echo ">> Writing super LP metadata..."
+dd if="$DIR/super_meta.bin" of="$BYNAME/super" bs=1048576 count=1 conv=notrunc,fsync 2>/dev/null
+EOS
+
+  local lp off sz
+  for lp in vendor_dlkm_a vendor_a system_ext_a; do
+    read -r off sz < <(python3 "$HERE/lib/lpinfo.py" "$s_sup" "$lp")
+    local count_sec=$(( (sz + 511) / 512 )) off_sec=$((off / 512))
+    dd if="$s_sup" of="$W/$lp.img" bs=512 skip="$off_sec" count="$count_sec" status=none
+    cat >> "$W/apply.sh" <<EOS
+echo ">> Writing $lp ($((sz >> 20)) MiB)..."
+dd if="\$DIR/$lp.img" of="\$BYNAME/super" bs=512 seek=$off_sec count=$count_sec conv=notrunc,fsync 2>/dev/null
+EOS
+  done
+
+  cat >> "$W/apply.sh" <<'EOS'
+rm -rf "$DIR"
+sync
+echo ">> OTA applied! Rebooting..."
+reboot
+EOS
+  chmod +x "$W/apply.sh"
+
+  log "pushing payload (~850 MiB) to $target:/data/local/tmp/churro_ota"
+  adb -s "$target" shell "rm -rf /data/local/tmp/churro_ota && mkdir -p /data/local/tmp/churro_ota"
+  adb -s "$target" push "$W/." /data/local/tmp/churro_ota/
+  rm -rf "$W"
+
+  log "applying update on device and rebooting"
+  adb -s "$target" shell "/data/local/tmp/churro_ota/apply.sh" || true
+  log "done! Device is rebooting into updated system with all data preserved."
+}
+
+# iso <churro.img> <out.iso>:
+# Build a bootable UEFI El-Torito ISO for iVentoy PXE / Ventoy that can update Churro.
+cmd_iso() {
+  local img=$1 out=$2; shift 2
+  bash "$HERE/tools/make-iso.sh" "$img" "$out" "$@"
+}
+
 # auto <in.bin> <out.img> [--gfx auto|native|nouveau|mesa|soft] [--kernel-profile generic]:
 # prepare everything (tools/prepare.sh) and build with the recommended defaults.
 # --gfx auto (default): the boot menu picks the graphics stack from the GPUs it finds (esp.sh).
@@ -267,10 +414,13 @@ cmd_auto() {
   cmd_build "$in" "$out" --kernel "$CHURRO_KERNEL" --data-size "$dsize" --vexemu "$vexemu" --features "security-software,firmware-lockdown,firmware-extra,gfx-mesa,gfx-minigbm,drivers-extra,audio-generic,lenovo-yoga,debug-log$xfeat" "${margs[@]}"
 }
 
-case ${1:-} in auto|build|install) deps_ensure ;; esac
+case ${1:-} in auto|build|install|update|ota|iso) deps_ensure ;; esac
 case ${1:-} in
   auto) shift; [ $# -ge 2 ] || die "usage: churro.sh auto <in.bin> <out.img> [--gfx auto|native|nouveau|mesa|soft]"; cmd_auto "$@" ;;
   build) shift; [ $# -ge 2 ] || die "usage: churro.sh build <in.bin> <out.img> [opts]"; cmd_build "$@" ;;
   install) shift; [ $# -eq 2 ] || die "usage: churro.sh install <churro.img> <disk, e.g. /dev/nvme0n1>"; cmd_install "$@" ;;
-  *) sed -n '2,6p' "$0"; exit 1 ;;
+  update) shift; [ $# -ge 2 ] || die "usage: churro.sh update <churro.img> <disk> [--full]"; cmd_update "$@" ;;
+  ota) shift; [ $# -eq 2 ] || die "usage: churro.sh ota <churro.img> <device-ip[:port]>"; cmd_ota "$@" ;;
+  iso) shift; [ $# -ge 2 ] || die "usage: churro.sh iso <churro.img> <out.iso>"; cmd_iso "$@" ;;
+  *) sed -n '2,9p' "$0"; exit 1 ;;
 esac

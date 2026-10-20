@@ -136,3 +136,30 @@ sudo dd if=out/churro.img of=/dev/sdX bs=4M status=progress conv=fsync
   - Confirm keyboard and touchpad no longer register touches.
   - Confirm on-screen keyboard appears when tapping text fields.
   - Rotate 90° / 180° / 270° and observe smooth screen reorientation.
+
+---
+
+## Data-Preserving Fast Updates (No Reflashing / No Data Loss)
+
+Once flashed to your USB drive or internal SSD, you never need to re-wipe and lose your apps or Google login when building a new update:
+
+### Method 1: Local USB/Disk Update (~10 Seconds)
+Plug the USB drive into your build machine:
+```bash
+sudo ./churro.sh update out/churro.img /dev/sdX
+```
+This writes only `EFI-SYSTEM`, `vbmeta_a`, and the modified logical extents in `super` (`vendor_a`, `vendor_dlkm_a`, `system_ext_a`), leaving `userdata` completely untouched.
+
+### Method 2: Wireless Over-The-Air Update (Wi-Fi ADB, Zero Unplugging)
+With your Yoga laptop booted and connected to Wi-Fi:
+```bash
+./churro.sh ota out/churro.img <yoga-ip>
+```
+The build machine's ADB public key (`~/.android/adbkey.pub`) is pre-authorized inside `/vendor`. The script stages the updated partitions into `/data/local/tmp/`, applies them to `/dev/block/by-name/*`, syncs, and reboots in ~10 seconds over Wi-Fi.
+
+### Method 3: Bootable UEFI ISO for iVentoy PXE / Ventoy
+To update via network boot or Ventoy:
+```bash
+sudo ./churro.sh iso out/churro.img out/churro-updater.iso
+```
+Drop `out/churro-updater.iso` into your NAS (`//homenas.local/nfs_storage/os_images/`) or Ventoy drive. Boot the Yoga over PXE/Ventoy: the updater boots into RAM in seconds, automatically detects the Yoga's Churro installation, applies the updates in-place, and reboots—preserving 100% of your data.

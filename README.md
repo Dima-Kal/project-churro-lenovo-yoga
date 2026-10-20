@@ -43,6 +43,28 @@ the machine halts on errors instead of rebooting, and everything is saved on the
 (Android's own log, e.g. why a service crashes); the previous boot's are `*.prev.log`.
 Install to a disk from any Linux live session: `sudo ./churro.sh install churro.img /dev/nvme0n1`.
 
+### Data-Preserving Updates & Flashing
+
+Once flashed, you never need to re-wipe your USB or SSD to test new changes:
+
+- **Local USB/SSD Update (in-place, ~10s, keeps data):**
+  ```bash
+  sudo ./churro.sh update out/churro.img /dev/sdX
+  ```
+  Writes only `EFI-SYSTEM`, `vbmeta_a`, and the modified extents of `super` (`vendor_a`, `vendor_dlkm_a`, `system_ext_a`). Userdata and apps stay 100% intact.
+
+- **Wireless Over-The-Air Update (Wi-Fi ADB, zero unplugging, keeps data):**
+  ```bash
+  ./churro.sh ota out/churro.img <device-ip>
+  ```
+  Streams the updated payload to the device over Wi-Fi/ADB and reboots in ~10 seconds.
+
+- **Bootable UEFI ISO for iVentoy PXE / Ventoy:**
+  ```bash
+  sudo ./churro.sh iso out/churro.img out/churro-updater.iso
+  ```
+  Builds a hybrid El-Torito UEFI ISO that boots via iVentoy PXE or Ventoy into RAM and updates the target disk in-place.
+
 ## What the conversion does
 
 1. **Bootloader**: Googlebooks boot via coreboot/depthcharge and the image's EFI partition is empty.
