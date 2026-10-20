@@ -200,6 +200,8 @@ EOF
   local vcmd blk=spi_intel,spi_intel_pci,tpm,tpm_tis,tpm_tis_core,tpm_crb,tpm_tis_spi,tpm_tis_i2c_cr50
   [ "$CHURRO_NPU" = true ] || blk="$blk,intel_vpu"
   vcmd=$(sed -E 's/ ?spi-intel\.(writeable|ignore_protection_status)=[^ ]*//g' "$W/vboot/cmdline")
+  # Display & Power: strip vendor's xe.enable_psr=1, console=null, performance governor, and no_console_suspend
+  vcmd=$(printf '%s' "$vcmd" | sed -E 's/ ?(console=null|cpufreq\.default_governor=[^ ]*|no_console_suspend|xe\.enable_psr=[^ ]*)//g')
   # Audio: the board forces SOF on every Intel HD-audio controller (dsp_driver=3), IPC4 and its
   # SoundWire links / topology NHLT. Generic: kernel defaults, i.e. auto-detect like distros
   # (SOF where DMICs/SoundWire need it, else snd_hda_intel; IPC version per platform).
@@ -208,8 +210,8 @@ EOF
     *module_blacklist=*) vcmd=$(printf '%s' "$vcmd" | sed -E "s/module_blacklist=([^ ]*)/module_blacklist=\1,$blk/") ;;
     *) vcmd="$vcmd module_blacklist=$blk" ;;
   esac
-  vcmd="$vcmd efi_pstore.pstore_disable=1 iommu.passthrough=1"
-  log "kernel cmdline: flash read-only, no TPM, no UEFI crash dumps, IOMMU passthrough, blacklisted: $blk"
+  vcmd="$vcmd efi_pstore.pstore_disable=1 iommu.passthrough=1 console=tty0 loglevel=3 cpufreq.default_governor=powersave pcie_aspm.policy=powersupersave snd_hda_intel.power_save=1 xe.enable_dpt=0 xe.enable_psr=0 xe.enable_dsb=0"
+  log "kernel cmdline: flash read-only, no TPM, no UEFI crash dumps, IOMMU passthrough, safe Intel display (no DPT/PSR), power-save defaults, blacklisted: $blk"
 
   log "populating EFI-SYSTEM"
   esp_build "$(part EFI-SYSTEM)" "$W" "$vcmd" "$bsrc"
