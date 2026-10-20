@@ -78,7 +78,7 @@ for lib in /lib/x86_64-linux-gnu/{libuuid.so.1,libpopt.so.0,libstdc++.so.6,libm.
   [ -f "$lib" ] && cp "$lib" "$INITRD_ROOT/lib/x86_64-linux-gnu/"
 done
 
-# Copy extra storage modules in dependency order if cached
+# Copy extra storage, USB, Type-C, LPSS, and pinctrl modules in dependency order
 PACK_STORAGE=$(ls -d /var/cache/churro/packs-generic-*/storage 2>/dev/null | head -1 || true)
 if [ -n "$PACK_STORAGE" ] && [ -f "$PACK_STORAGE/modules.load" ]; then
   cp "$PACK_STORAGE"/modules.load "$INITRD_ROOT/lib/modules/modules.load"
@@ -86,6 +86,25 @@ if [ -n "$PACK_STORAGE" ] && [ -f "$PACK_STORAGE/modules.load" ]; then
     [ -n "$ko" ] && [ -f "$PACK_STORAGE/$ko" ] && cp "$PACK_STORAGE/$ko" "$INITRD_ROOT/lib/modules/"
   done < "$PACK_STORAGE/modules.load"
 fi
+
+# Extract essential platform/USB/PCI modules from vendor_dlkm_a so USB-C/Thunderbolt & Alder Lake ports work in initrd
+MNT_DLKM=$(mktemp -d)
+read -r dlkm_off dlkm_sz < <(python3 "$HERE/lib/lpinfo.py" "$P_SUP" "vendor_dlkm_a")
+if mount -o ro,offset=$dlkm_off,sizelimit=$dlkm_sz "$P_SUP" "$MNT_DLKM" 2>/dev/null; then
+  for ko in \
+    mfd-core.ko intel-lpss.ko intel-lpss-pci.ko intel-lpss-acpi.ko \
+    pinctrl-intel.ko pinctrl-intel-platform.ko pinctrl-alderlake.ko pinctrl-tigerlake.ko pinctrl-meteorlake.ko \
+    i2c-designware-core.ko i2c-designware-platform.ko i2c-ccgx-ucsi.ko i2c-designware-pci.ko \
+    intel-xhci-usb-role-switch.ko ucsi_acpi.ko xhci-pci-renesas.ko \
+    rtsx_pci.ko rtsx_pci_sdmmc.ko rtsx_usb.ko rtsx_usb_sdmmc.ko; do
+    if [ -f "$MNT_DLKM/lib/modules/$ko" ]; then
+      cp "$MNT_DLKM/lib/modules/$ko" "$INITRD_ROOT/lib/modules/"
+      grep -qx "$ko" "$INITRD_ROOT/lib/modules/modules.load" 2>/dev/null || echo "$ko" >> "$INITRD_ROOT/lib/modules/modules.load"
+    fi
+  done
+  umount "$MNT_DLKM"
+fi
+rmdir "$MNT_DLKM" 2>/dev/null || true
 
 # 4. Create init script
 cat > "$INITRD_ROOT/init" <<'EOF'
@@ -115,9 +134,10 @@ fi
 sleep 2
 mdev -s 2>/dev/null || true
 
-# Wait up to 8 seconds for USB/NVMe disks to finish enumerating and create /dev nodes
+# Wait up to 10 seconds for USB/NVMe disks to finish enumerating and create /dev nodes
+echo ">> Waiting for storage devices (USB / NVMe / SD)..."
 FOUND_DISKS=""
-for attempt in 1 2 3 4 5 6 7 8; do
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
   mdev -s 2>/dev/null || true
   for b in /sys/class/block/*; do
     [ -e "$b/dev" ] || continue
@@ -130,22 +150,34 @@ for attempt in 1 2 3 4 5 6 7 8; do
     fi
   done
 
-  for d in /sys/block/sd* /sys/block/nvme*n1 /sys/block/mmcblk* /sys/block/vd*; do
-    [ -e "$d" ] || continue
-    bn=$(basename "$d")
-    dev="/dev/$bn"
-    [ -b "$dev" ] || continue
-
-    # Check if disk has Churro partition layout via sysfs uevent PARTNAME or sgdisk
-    if grep -q "PARTNAME=EFI-SYSTEM" "$d"/"$bn"*/uevent 2>/dev/null && grep -q "PARTNAME=userdata" "$d"/"$bn"*/uevent 2>/dev/null; then
-      FOUND_DISKS="$FOUND_DISKS $dev"
-    else
-      gpt_names=$(/bin/sgdisk -p "$dev" 2>/dev/null | awk '{print $NF}' || true)
-      if echo "$gpt_names" | grep -qx "EFI-SYSTEM" && echo "$gpt_names" | grep -qx "userdata"; then
-        FOUND_DISKS="$FOUND_DISKS $dev"
-      fi
+  # Find any disk that has a partition with PARTNAME=EFI-SYSTEM or PARTNAME=super
+  for uev in /sys/class/block/*/uevent; do
+    [ -f "$uev" ] || continue
+    if grep -Eq "^PARTNAME=(EFI-SYSTEM|super|CHURRO-LOG)$" "$uev" 2>/dev/null; then
+      pdir=$(dirname "$uev")
+      pbn=$(basename "$pdir")
+      # Determine parent disk from /sys/block/*/$pbn
+      for d in /sys/block/*; do
+        if [ -e "$d/$pbn" ]; then
+          dbn=$(basename "$d")
+          echo " $FOUND_DISKS " | grep -q " /dev/$dbn " || FOUND_DISKS="$FOUND_DISKS /dev/$dbn"
+        fi
+      done
     fi
   done
+
+  # Fallback: check via sgdisk
+  if [ -z "$FOUND_DISKS" ]; then
+    for d in /sys/block/sd* /sys/block/nvme* /sys/block/mmcblk* /sys/block/vd*; do
+      [ -e "$d" ] || continue
+      bn=$(basename "$d")
+      dev="/dev/$bn"
+      [ -b "$dev" ] || continue
+      if /bin/sgdisk -p "$dev" 2>/dev/null | grep -Eq "EFI-SYSTEM|super|CHURRO-LOG"; then
+        echo " $FOUND_DISKS " | grep -q " $dev " || FOUND_DISKS="$FOUND_DISKS $dev"
+      fi
+    done
+  fi
 
   [ -n "$FOUND_DISKS" ] && break
   sleep 1
@@ -172,9 +204,14 @@ done
 if [ -z "$TARGET_DISK" ]; then
   echo ""
   echo ">> ERROR: No disk with an existing Churro installation was found!"
-  echo "   Available block devices in /sys/class/block:"
-  ls -1 /sys/class/block/ 2>/dev/null | tr '\n' ' '; echo ""
-  ls -l /dev/sd* /dev/nvme* 2>/dev/null || true
+  echo "   Block devices in /sys/block:"
+  ls -1 /sys/block/ 2>/dev/null | tr '\n' ' '; echo ""
+  echo "   Partitions in /sys/class/block:"
+  for u in /sys/class/block/*/uevent; do
+    [ -f "$u" ] || continue
+    pn=$(grep "^PARTNAME=" "$u" 2>/dev/null || true)
+    [ -n "$pn" ] && echo "     $(basename "$(dirname "$u")"): $pn"
+  done
   echo ""
   echo ">> Dropping to rescue shell..."
   sh
@@ -307,19 +344,19 @@ fi
 
 menuentry "Project Churro - Update Existing Disk (Preserve All Data)" {
     echo "Loading Churro kernel and updater..."
-    linux /boot/kernel console=tty0 churro.mode=update
+    linux /boot/kernel console=tty0 iommu.passthrough=1 efi_pstore.pstore_disable=1 churro.mode=update
     initrd /boot/initrd.img
 }
 
 menuentry "Project Churro - View / Extract Crash Logs (boot.log & logcat.log)" {
     echo "Loading Churro kernel and log viewer..."
-    linux /boot/kernel console=tty0 churro.mode=logs
+    linux /boot/kernel console=tty0 iommu.passthrough=1 efi_pstore.pstore_disable=1 churro.mode=logs
     initrd /boot/initrd.img
 }
 
 menuentry "Project Churro - Recovery & Debug Shell" {
     echo "Loading Churro kernel and shell..."
-    linux /boot/kernel console=tty0 churro.mode=shell
+    linux /boot/kernel console=tty0 iommu.passthrough=1 efi_pstore.pstore_disable=1 churro.mode=shell
     initrd /boot/initrd.img
 }
 EOF
