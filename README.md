@@ -27,6 +27,7 @@ drop it on machines with Intel Wi-Fi) and `--data-size N`
 (Android's data partition in GiB, default 12; the image is then ~26 GiB, so use a USB stick of
 32 GB or more — the image's own 4 GiB fills up on first boot).
 Hardware status and roadmap: [docs/05-hardware-support.md](docs/05-hardware-support.md).
+Lenovo Yoga 7 14IAL7 target guide: [docs/08-lenovo-yoga-7.md](docs/08-lenovo-yoga-7.md).
 `CHURRO_NPU=true` lets the NPU driver load (off by default: it froze an Arrow Lake laptop).
 
 > ⚠ **Safety:** the Googlebook image updates firmware by itself at every boot (BIOS flash via
