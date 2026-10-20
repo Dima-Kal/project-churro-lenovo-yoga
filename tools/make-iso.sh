@@ -107,23 +107,37 @@ if mount -o ro,offset=$dlkm_off,sizelimit=$dlkm_sz "$P_SUP" "$MNT_DLKM" 2>/dev/n
 fi
 rmdir "$MNT_DLKM" 2>/dev/null || true
 
-# Copy USB/PCI Ethernet drivers from kernel cache (in dependency order: mii -> usbnet -> cdc_ether -> cdc_ncm/r8152/r8153_ecm/ax88179/asix)
-KMOD_DIR=$(ls -d /var/cache/churro/kernel-generic-*/modroot/lib/modules/*/kernel/drivers/net 2>/dev/null | head -1 || true)
+# Copy USB/PCI Ethernet drivers from kernel cache (in strict dependency order)
+KMOD_DIR=$(ls -d /var/cache/churro/kernel-generic-*/modroot/lib/modules/*/kernel/drivers 2>/dev/null | head -1 || true)
 if [ -n "$KMOD_DIR" ]; then
   for rel in \
-    mii.ko \
-    usb/usbnet.ko \
-    usb/cdc_ether.ko \
-    usb/cdc_ncm.ko \
-    usb/r8152.ko \
-    usb/r8153_ecm.ko \
-    usb/ax88179_178a.ko \
-    usb/asix.ko \
-    usb/aqc111.ko \
-    usb/rtl8150.ko \
-    ethernet/realtek/r8169.ko \
-    ethernet/intel/e1000e/e1000e.ko \
-    ethernet/intel/igc/igc.ko; do
+    pps/pps_core.ko \
+    ptp/ptp.ko \
+    net/mii.ko \
+    net/mdio.ko \
+    net/phy/realtek.ko \
+    net/usb/usbnet.ko \
+    net/usb/cdc_ether.ko \
+    net/usb/cdc_eem.ko \
+    net/usb/cdc_ncm.ko \
+    net/usb/rndis_host.ko \
+    net/usb/r8152.ko \
+    net/usb/r8153_ecm.ko \
+    net/usb/ax88179_178a.ko \
+    net/usb/asix.ko \
+    net/usb/aqc111.ko \
+    net/usb/rtl8150.ko \
+    net/usb/smsc75xx.ko \
+    net/usb/smsc95xx.ko \
+    net/usb/dm9601.ko \
+    net/usb/mcs7830.ko \
+    net/usb/pegasus.ko \
+    net/usb/plusb.ko \
+    net/usb/net1080.ko \
+    net/ethernet/realtek/r8169.ko \
+    net/ethernet/intel/e1000/e1000.ko \
+    net/ethernet/intel/e1000e/e1000e.ko \
+    net/ethernet/intel/igc/igc.ko; do
     if [ -f "$KMOD_DIR/$rel" ]; then
       ko=$(basename "$rel")
       cp "$KMOD_DIR/$rel" "$INITRD_ROOT/lib/modules/$ko"
@@ -310,9 +324,13 @@ EOH
     ifn=$(basename "$net")
     case "$ifn" in
       eth*|en*|usb*)
-        echo ">> Bringing up network interface $ifn via DHCP..."
+        echo ">> Bringing up network interface $ifn (waiting for link + DHCP)..."
         ip link set "$ifn" up 2>/dev/null || true
-        udhcpc -i "$ifn" -n -q -t 3 -T 1 2>/dev/null || true
+        for _w in 1 2 3 4 5; do
+          [ "$(cat "/sys/class/net/$ifn/carrier" 2>/dev/null || echo 0)" = "1" ] && break
+          sleep 1
+        done
+        udhcpc -i "$ifn" -s /usr/share/udhcpc/default.script -n -q -t 6 -T 2 2>/dev/null || true
         ;;
     esac
   done
@@ -328,11 +346,15 @@ EOH
     echo "   - http://$MY_IP/logcat.log"
     echo "   - http://$MY_IP/logcat.prev.log"
     echo "================================================================"
+  else
+    echo ">> WARNING: No IP obtained via DHCP. Detected network interfaces:"
+    ls -1 /sys/class/net/ 2>/dev/null | tr '\n' ' '; echo ""
   fi
 }
 
+extract_and_serve_logs
+
 if [ "$MODE" = "logs" ]; then
-  extract_and_serve_logs
   echo ""
   if [ -s /logs/boot.log ]; then
     echo "================ LAST 40 LINES OF boot.log ================"
