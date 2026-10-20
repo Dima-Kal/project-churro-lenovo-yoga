@@ -1,0 +1,187 @@
+{
+    "Nodes": [
+        {
+            "Name": "EnergyPerformancePreference",
+            "Path": "vendor.powerhal.epp",
+            "Values": [
+                "maximum",
+                "performance",
+                "balance-performance",
+                "balance-power",
+                "power"
+            ],
+            "DefaultIndex": 3,
+            "ResetOnInit": true,
+            "Type": "Property"
+        },
+        {
+            "Name": "PlatformProfile",
+            "Path": "/sys/firmware/acpi/platform_profile",
+            "Values": [
+                "low-power",
+                "balanced",
+                "performance"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "TopAppUclamp",
+            "Path": "/dev/cpuctl/top-app/cpu.uclamp.min",
+            "Values": [
+                "0",
+                "20",
+                "40"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "TopAppCpuset",
+            "Path": "/dev/cpuset/top-app/cpus",
+            "Values": [
+                "0-15",
+                "8-15"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "CDCpuset",
+            "Path": "/dev/cpuset/camera-daemon/cpus",
+            "Values": [
+                "8-15",
+                "0-15"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "FGCpuset",
+            "Path": "/dev/cpuset/foreground/cpus",
+            "Values": [
+                "0-15",
+                "8-15"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "FGWinCpuset",
+            "Path": "/dev/cpuset/foreground_window/cpus",
+            "Values": [
+                "0-15",
+                "8-15"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "BGCpuset",
+            "Path": "/dev/cpuset/background/cpus",
+            "Values": [
+                "8-15"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "SysBGCpuset",
+            "Path": "/dev/cpuset/system-background/cpus",
+            "Values": [
+                "8-15"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "RestrictedCpuset",
+            "Path": "/dev/cpuset/restricted/cpus",
+            "Values": [
+                "8-15"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "SchedLoadBalance",
+            "Path": "/dev/cpuset/sched_load_balance",
+            "Values": [
+                "1",
+                "0"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "WorkQueueAffinity",
+            "Path": "/sys/devices/virtual/workqueue/cpumask",
+            "Values": [
+                "ff00",
+                "ffff"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        },
+        {
+            "Name": "XeIrqAffinity",
+            "Path": "/dev/power/irq-by-name/xe/smp_affinity",
+            "Values": [
+                "ff00",
+                "ffff"
+            ],
+            "DefaultIndex": 0,
+            "ResetOnInit": true
+        }
+    ],
+    "Actions": [
+        {
+            "PowerHint": "FIXED_PERFORMANCE",
+            "Node": "EnergyPerformancePreference",
+            "Duration": 0,
+            "Value": "balance-performance"
+        },
+        {
+            "PowerHint": "LOW_POWER",
+            "Node": "EnergyPerformancePreference",
+            "Duration": 0,
+            "Value": "power"
+        },
+        {
+            "PowerHint": "LOW_POWER",
+            "Node": "TopAppCpuset",
+            "Duration": 0,
+            "Value": "8-15"
+        },
+        {
+            "PowerHint": "PROFILE_MEDIA_PLAYBACK",
+            "Node": "TopAppCpuset",
+            "Duration": 0,
+            "Value": "8-15"
+        },
+        {
+            "PowerHint": "PROFILE_MEDIA_PLAYBACK",
+            "Node": "FGCpuset",
+            "Duration": 0,
+            "Value": "8-15"
+        },
+        {
+            "PowerHint": "PROFILE_MEDIA_PLAYBACK",
+            "Node": "FGWinCpuset",
+            "Duration": 0,
+            "Value": "8-15"
+        },
+        {
+            "PowerHint": "PROFILE_MEDIA_PLAYBACK",
+            "Node": "TopAppUclamp",
+            "Duration": 0,
+            "Value": "0"
+        },
+        {
+            "PowerHint": "LAUNCH",
+            "Node": "TopAppUclamp",
+            "Duration": 800,
+            "Value": "20"
+        }
+    ]
+}
